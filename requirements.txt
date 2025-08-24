@@ -1,0 +1,5 @@
+discord.py
+flask
+requests
+playwright
+beautifulsoup4
