@@ -98,6 +98,7 @@ def get_epic_games_link(game_name):
 
 # --- PlayStation Store Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ) ---
 
+# --- PlayStation Store Fiyat ve Link Alma Fonksiyonu (NİHAİ DÜZELTİLMİŞ VERSİYON) ---
 async def get_playstation_price(game_name):
     global browser
     if not browser or not browser.is_connected(): return None
@@ -108,7 +109,6 @@ async def get_playstation_price(game_name):
         search_url = f"https://store.playstation.com/tr-tr/search/{requests.utils.quote(game_name)}"
         await page.goto(search_url)
 
-        # --- GELİŞTİRİLMİŞ EŞLEŞME MANTIĞI (EDITION/DLC için) ---
         results_selector = 'div[data-qa^="search#productTile"]'
         try:
             await page.wait_for_selector(results_selector, timeout=15000)
@@ -124,7 +124,6 @@ async def get_playstation_price(game_name):
         exact_match = None
         startswith_match = None
 
-        # En iyi eşleşmeyi bulmak için sonuçları döngüye al
         for result in all_results:
             try:
                 title_selector = 'span[data-qa$="product-name"]'
@@ -132,26 +131,17 @@ async def get_playstation_price(game_name):
                 if await title_element.count() > 0:
                     title_text = await title_element.inner_text()
                     cleaned_title = clean_game_name(title_text)
-
-                            # 1. Öncelik: Tam eşleşme (örn: "the last of us" == "the last of us")
                     if cleaned_title == game_name:
                         exact_match = result
-                        break # En iyi sonuç bu, aramayı bitir.
-
-                            # 2. Öncelik: "ile Başlayan" eşleşme (örn: "bad north jotunn edition".startswith("bad north"))
-                            # Henüz bu tür bir eşleşme bulamadıysak bunu ata.
+                        break
                     if cleaned_title.startswith(game_name) and not startswith_match:
                         startswith_match = result
             except Exception:
                 continue
 
-        # Eşleşme önceliğini belirle: Tam > Başlayan > İlk Sonuç (fallback)
         best_match_element = exact_match or startswith_match or all_results[0]
-
-        # En uygun sonuca tıkla
         await best_match_element.locator('a.psw-link').first.click()
-        # --- EŞLEŞME MANTIĞI SONU ---
-
+        
         await page.wait_for_selector('span[data-qa^="mfeCtaMain#offer"]')
         link = page.url
 
@@ -159,7 +149,6 @@ async def get_playstation_price(game_name):
         is_in_plus = False
         is_in_ea_play = False
 
-                # PS Plus durumunu kontrol et
         offer0_price_selector = 'span[data-qa="mfeCtaMain#offer0#finalPrice"]'
         offer0_element = page.locator(offer0_price_selector).first
         if await offer0_element.count() > 0:
@@ -172,8 +161,9 @@ async def get_playstation_price(game_name):
                     price_info = await original_price_element.inner_text()
                 else:
                     price_info = offer0_text
-
-                # EA Play kontrolü
+        
+        # --- DÜZELTME: Bu bloklar artık ana kod akışında, girintisi doğru ---
+        # EA Play kontrolü
         ea_play_selector = 'span[data-qa="mfeCtaMain#offer2#discountInfo"]'
         ea_play_element = page.locator(ea_play_selector).first
         if await ea_play_element.count() > 0:
@@ -181,7 +171,7 @@ async def get_playstation_price(game_name):
             if "EA Play" in ea_play_text:
                 is_in_ea_play = True
 
-                # İndirimli veya ana satın alma fiyatını bul
+        # İndirimli veya ana satın alma fiyatını bul
         purchase_price_selector = 'span[data-qa="mfeCtaMain#offer1#finalPrice"]'
         purchase_price_element = page.locator(purchase_price_selector).first
         if await purchase_price_element.count() > 0:
@@ -189,11 +179,11 @@ async def get_playstation_price(game_name):
         elif not is_in_plus and await offer0_element.count() > 0:
             price_info = await offer0_element.inner_text()
 
-                # Sonucu formatla
+        # Sonucu formatla
         final_price_text = price_info
         if is_in_plus:
             if "Dahil" not in final_price_text and "Oyna" not in final_price_text:
-                    final_price_text += "\n*PS Plus'a Dahil*"
+                 final_price_text += "\n*PS Plus'a Dahil*"
         if is_in_ea_play:
             final_price_text += "\n*EA Play'e Dahil*"
 
