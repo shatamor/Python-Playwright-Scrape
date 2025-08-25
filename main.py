@@ -1,5 +1,7 @@
 import discord
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import requests
 import json
 from flask import Flask
