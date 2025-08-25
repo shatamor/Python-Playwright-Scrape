@@ -10,13 +10,14 @@ from playwright.async_api import async_playwright
 import asyncio
 import time
 import re
-from datetime import datatime
+from datetime import datetime # DÜZELTİLDİ
 
 # --- Global Değişkenler ---
 playwright = None
 browser = None
 currency_cache = { "rate": None, "last_fetched": 0 }
 
+# --- Loglama Yardımcı Fonksiyonu ---
 def log_debug(func_name, message):
     """Log mesajlarını zaman damgası ve fonksiyon adıyla birlikte konsola yazdırır."""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -52,56 +53,51 @@ def get_usd_to_try_rate():
         except Exception: return currency_cache["rate"]
     else: return currency_cache["rate"]
 
-# --- Steam Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ) ---
+# --- Steam Fiyat ve Link Alma Fonksiyonu ---
 def get_steam_price(game_name):
     func_name = "Steam"
     start_time = time.time()
     log_debug(func_name, f"İstek başladı: '{game_name}'")
-
     try:
-        # Steam'den doğrudan Türkiye (MENA-USD) arama sonucunu istiyoruz
         search_url = f"https://store.steampowered.com/api/storesearch/?term={requests.utils.quote(game_name)}&l=turkish&cc=TR"
         log_debug(func_name, f"URL: {search_url}")
         response = requests.get(search_url, timeout=10)
         
         log_debug(func_name, f"HTTP Durum Kodu: {response.status_code}")
         if response.status_code != 200 or not response.json().get('items'):
+            log_debug(func_name, "API'den geçerli sonuç alınamadı.")
             return None
 
         search_results = response.json().get('items', [])
-        if not search_results: return None
+        if not search_results: 
+            log_debug(func_name, "Arama sonucu bulunamadı.")
+            return None
 
-        # Aradığımız oyuna en yakın sonucu bul
         best_match = search_results[0]
         link = f"https://store.steampowered.com/app/{best_match.get('id')}"
-
-        # YENİ: Steam'den gelen resmi, büyük-küçük harfe duyarlı oyun adını alıyoruz.
         game_name_from_steam = best_match.get('name')
 
-        # Fiyatı doğrudan arama sonucundan alıyoruz. Bu en doğru MENA fiyatıdır.
         price_data = best_match.get('price')
         if not price_data:
-            # Eğer fiyat bilgisi yoksa, ücretsiz olup olmadığını kontrol et
-            if best_match.get('unpurchaseable'): # Satın alınamayan bir ürünse
-                 return {"price": "Fiyat bilgisi yok.", "link": link, "name": game_name_from_steam} # YENİ: name eklendi
-            else:
-                 return {"price": "Ücretsiz!", "link": link, "name": game_name_from_steam} # YENİ: name eklendi
+            price_info_text = "Ücretsiz!" if not best_match.get('unpurchaseable') else "Fiyat bilgisi yok."
+            log_debug(func_name, f"Sonuç bulundu: {price_info_text}")
+            return {"price": price_info_text, "link": link, "name": game_name_from_steam}
 
         price_float = None
-        # Arama sonucundan gelen fiyat dict ise (indirimli)
         if isinstance(price_data, dict):
-            final_price = price_data.get('final') # 'final' anahtarı indirimli fiyattır
+            final_price = price_data.get('final')
             if isinstance(final_price, int):
                 price_float = final_price / 100.0
 
         if price_float is not None:
-            return {"price": (price_float, "USD"), "link": link, "name": game_name_from_steam} # YENİ: name eklendi
+            log_debug(func_name, f"Fiyat bulundu: ${price_float} USD")
+            return {"price": (price_float, "USD"), "link": link, "name": game_name_from_steam}
         else:
-            return {"price": "Fiyat bilgisi yok.", "link": link, "name": game_name_from_steam} # YENİ: name eklendi
+            log_debug(func_name, "Fiyat bilgisi ayrıştırılamadı.")
+            return {"price": "Fiyat bilgisi yok.", "link": link, "name": game_name_from_steam}
 
     except Exception as e:
         log_debug(func_name, f"HATA OLUŞTU: {e}")
-        print(f"STEAM HATA: {e}")
         return None
     finally:
         duration = time.time() - start_time
@@ -112,11 +108,9 @@ def get_epic_games_link(game_name):
     query = requests.utils.quote(game_name)
     return f"https://store.epicgames.com/tr/browse?q={query}&sortBy=relevancy&sortDir=DESC"
 
-# --- PlayStation Store Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ) ---
-
-# --- PlayStation Store Fiyat ve Link Alma Fonksiyonu (EN SAĞLAM VERSİYON) ---
+# --- PlayStation Store Fiyat ve Link Alma Fonksiyonu ---
 async def get_playstation_price(game_name):
-    func_name = "Playstation"
+    func_name = "PlayStation"
     start_time = time.time()
     log_debug(func_name, f"İstek başladı: '{game_name}'")
     global browser
@@ -132,12 +126,8 @@ async def get_playstation_price(game_name):
         await page.goto(search_url)
 
         results_selector = 'div[data-qa^="search#productTile"]'
-        try:
-            await page.wait_for_selector(results_selector, timeout=15000)
-            log_debug(func_name, "Arama sonuçları bulundu.")
-        except Exception:
-            await page.close()
-            return None
+        await page.wait_for_selector(results_selector, timeout=15000)
+        log_debug(func_name, "Arama sonuçları bulundu.")
 
         all_results = await page.locator(results_selector).all()
         if not all_results:
@@ -166,9 +156,6 @@ async def get_playstation_price(game_name):
         await best_match_element.locator('a.psw-link').first().click()
         log_debug(func_name, "En iyi sonuca tıklandı, ürün sayfasına gidiliyor.")
         
-        # --- EN ÖNEMLİ DEĞİŞİKLİK BURADA ---
-        # Sayfadaki tüm dinamik içeriklerin (fiyatlar gibi) yüklenmesini bekle.
-        # Bu, zamanlama sorunlarını (race condition) çözer.
         await page.wait_for_load_state('networkidle')
         log_debug(func_name, "Ürün sayfası yüklendi. Fiyat aranıyor.")
         
@@ -211,9 +198,9 @@ async def get_playstation_price(game_name):
         if is_in_ea_play:
             final_price_text += "\n*EA Play'e Dahil*"
             
-        log_debug(func_name, f"Sonuç bulundu: {final_price_text}")
+        log_debug(func_name, f"Sonuç bulundu: '{final_price_text.replace('\n', ' ')}'")
         await page.close()
-        return {"price": final_price_text, "link": page.url}
+        return {"price": final_price_text, "link": link}
 
     except Exception as e:
         log_debug(func_name, f"HATA OLUŞTU: {e}")
@@ -226,9 +213,9 @@ async def get_playstation_price(game_name):
 # --- Xbox Store Fiyat ve Link Alma Fonksiyonu ---
 async def get_xbox_price(game_name_clean):
     func_name = "Xbox"
-    global browser
     start_time = time.time()
-    log_debug(func_name, f"İstek başladı: '{game_name}'")
+    log_debug(func_name, f"İstek başladı: '{game_name_clean}'") # DÜZELTİLDİ
+    global browser
     if not browser or not browser.is_connected(): 
         log_debug(func_name, "Tarayıcı bulunamadı veya bağlı değil.")
         return None
@@ -239,36 +226,55 @@ async def get_xbox_price(game_name_clean):
         search_url = f"https://www.xbox.com/tr-TR/Search/Results?q={requests.utils.quote(game_name_clean)}"
         log_debug(func_name, f"Arama sayfasına gidiliyor: {search_url}")
         await page.goto(search_url)
+        
         await page.wait_for_selector('div[class*="ProductCard-module"]')
+        log_debug(func_name, "Arama sonuçları bulundu.")
         results = await page.query_selector_all('a[class*="commonStyles-module__basicButton"]')
-        if not results: await page.close(); return None
+        if not results: 
+            await page.close()
+            return None
+
         target_link = None
         for result in results:
             aria_label = await result.get_attribute("aria-label") or ""
             if clean_game_name(aria_label).startswith(game_name_clean):
                 target_link = result
                 break
-        if not target_link: await page.close(); return None
+
+        if not target_link: 
+            log_debug(func_name, "Eşleşen ürün linki bulunamadı.")
+            await page.close()
+            return None
+        
         await target_link.click()
+        log_debug(func_name, "En iyi sonuca tıklandı, ürün sayfasına gidiliyor.")
         await page.wait_for_load_state('networkidle')
+        log_debug(func_name, "Ürün sayfası yüklendi. Fiyat aranıyor.")
         link = page.url
+
         price_info = "Fiyat bilgisi yok."
         is_on_game_pass = False
+        
         game_pass_selector = 'svg[aria-label="Game Pass ile birlikte gelir"]'
         if await page.locator(game_pass_selector).count() > 0:
             is_on_game_pass = True
+        
         price_selector = 'span[class*="Price-module__boldText"]'
         price_element = page.locator(price_selector).first
         if await price_element.count() > 0:
             price_text = await price_element.inner_text()
             price_info = price_text
-        await page.close()
+
+        final_result = price_info
         if is_on_game_pass:
             if price_info != "Fiyat bilgisi yok.":
-                return {"price": f"{price_info}\n*Game Pass'e Dahil*", "link": link}
+                final_result = f"{price_info}\n*Game Pass'e Dahil*"
             else:
-                return {"price": "Game Pass'e Dahil", "link": link}
-        return {"price": price_info, "link": link}
+                final_result = "Game Pass'e Dahil"
+        
+        log_debug(func_name, f"Sonuç bulundu: '{final_result.replace('\n', ' ')}'")
+        await page.close()
+        return {"price": final_result, "link": link}
     except Exception as e:
         log_debug(func_name, f"HATA OLUŞTU: {e}")
         if page and not page.is_closed(): await page.close()
@@ -277,6 +283,7 @@ async def get_xbox_price(game_name_clean):
         duration = time.time() - start_time
         log_debug(func_name, f"İstek {duration:.2f} saniyede tamamlandı.")
 
+# --- Allkeyshop Fiyat ve Link Alma Fonksiyonu ---
 def get_allkeyshop_price(game_name):
     func_name = "Allkeyshop"
     start_time = time.time()
@@ -287,7 +294,7 @@ def get_allkeyshop_price(game_name):
         log_debug(func_name, f"URL: {url}")
         
         headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
-        response = requests.get(url, headers=headers, timeout=15) # Timeout'u biraz artıralım
+        response = requests.get(url, headers=headers, timeout=15)
         
         log_debug(func_name, f"HTTP Durum Kodu: {response.status_code}")
         if response.status_code != 200:
@@ -335,6 +342,8 @@ async def on_message(message):
     if message.content.lower().startswith('!fiyat '):
         oyun_adi_orjinal = message.content[7:].strip()
         if not oyun_adi_orjinal: await message.channel.send("Lütfen bir oyun adı girin."); return
+        
+        log_debug("on_message", f"Yeni istek: '{oyun_adi_orjinal}' | Kullanıcı: {message.author}")
         oyun_adi_temiz = clean_game_name(oyun_adi_orjinal)
         msg = await message.channel.send(f"**{oyun_adi_orjinal}** için mağazalar kontrol ediliyor...")
 
@@ -343,10 +352,11 @@ async def on_message(message):
             "epic": asyncio.to_thread(get_epic_games_link, oyun_adi_temiz),
             "ps": get_playstation_price(oyun_adi_temiz),
             "xbox": get_xbox_price(oyun_adi_temiz),
-            "allkeyshop": asyncio.to_thread(get_allkeyshop_price, oyun_adi_temiz) # YENİ EKLENDİ
+            "allkeyshop": asyncio.to_thread(get_allkeyshop_price, oyun_adi_temiz)
         }
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
         sonuclar = dict(zip(tasks.keys(), results))
+        log_debug("on_message", "Tüm mağaza görevleri tamamlandı. Sonuçlar formatlanıyor.")
 
         display_game_name = oyun_adi_orjinal
         steam_sonucu = sonuclar.get("steam")
@@ -368,24 +378,20 @@ async def on_message(message):
                 embed.add_field(name="Steam", value=f"[{display_text}]({link})", inline=True)
             else: embed.add_field(name="Steam", value=f"[{price_info}]({link})", inline=True)
 
-        # --- Allkeyshop Sonucu (GÜNCELLENDİ) ---
+        # --- Allkeyshop Sonucu ---
         allkeyshop_sonucu = sonuclar.get("allkeyshop")
         if isinstance(allkeyshop_sonucu, dict):
             price_info, link = allkeyshop_sonucu["price"], allkeyshop_sonucu["link"]
-            # Fiyat bilgisinin tuple olup olmadığını kontrol et (USD -> TRY dönüşümü için)
             if isinstance(price_info, tuple):
                 price, currency = price_info
                 try_rate = get_usd_to_try_rate()
                 if try_rate and currency == "USD":
                     tl_price = price * try_rate
-                    # Steam ile aynı formatta göster
                     display_text = f"${price:,.2f} {currency}\n(≈ {tl_price:,.2f} TL)"
                 else:
-                    # Eğer kur alınamazsa sadece USD fiyatını göster
                     display_text = f"${price:,.2f} {currency}"
                 embed.add_field(name="Allkeyshop (CD-Key)", value=f"[{display_text}]({link})", inline=True)
             else:
-                # Eğer fiyat tuple değilse (örn: "Bulunamadı"), direkt yazdır
                 embed.add_field(name="Allkeyshop (CD-Key)", value=f"[{price_info}]({link})", inline=True)
 
         # --- PlayStation Sonucu ---
@@ -404,6 +410,7 @@ async def on_message(message):
             embed.add_field(name="Epic Games", value=f"[Mağazada Ara]({epic_linki})", inline=True)
 
         await msg.edit(content=None, embed=embed)
+        log_debug("on_message", f"Sonuçlar kullanıcıya gönderildi: '{oyun_adi_orjinal}'")
 
 # --- Botu ve Sunucuyu Başlatma ---
 # keep_alive() 
