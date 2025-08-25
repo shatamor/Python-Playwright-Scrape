@@ -10,11 +10,17 @@ from playwright.async_api import async_playwright
 import asyncio
 import time
 import re
+from datetime import datatime
 
 # --- Global Değişkenler ---
 playwright = None
 browser = None
 currency_cache = { "rate": None, "last_fetched": 0 }
+
+def log_debug(func_name, message):
+    """Log mesajlarını zaman damgası ve fonksiyon adıyla birlikte konsola yazdırır."""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{timestamp}] [DEBUG] [{func_name}] {message}")
 
 # --- Web Sunucusu ve Keep Alive ---
 app = Flask('')
@@ -48,10 +54,17 @@ def get_usd_to_try_rate():
 
 # --- Steam Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ) ---
 def get_steam_price(game_name):
+    func_name = "Steam"
+    start_time = time.time()
+    log_debug(func_name, f"İstek başladı: '{game_name}'")
+
     try:
         # Steam'den doğrudan Türkiye (MENA-USD) arama sonucunu istiyoruz
         search_url = f"https://store.steampowered.com/api/storesearch/?term={requests.utils.quote(game_name)}&l=turkish&cc=TR"
-        response = requests.get(search_url)
+        log_debug(func_name, f"URL: {search_url}")
+        response = requests.get(search_url, timeout=10)
+        
+        log_debug(func_name, f"HTTP Durum Kodu: {response.status_code}")
         if response.status_code != 200 or not response.json().get('items'):
             return None
 
@@ -87,9 +100,12 @@ def get_steam_price(game_name):
             return {"price": "Fiyat bilgisi yok.", "link": link, "name": game_name_from_steam} # YENİ: name eklendi
 
     except Exception as e:
+        log_debug(func_name, f"HATA OLUŞTU: {e}")
         print(f"STEAM HATA: {e}")
         return None
-
+    finally:
+        duration = time.time() - start_time
+        log_debug(func_name, f"İstek {duration:.2f} saniyede tamamlandı.")
 
 # --- Epic Games Link Bulma Fonksiyonu ---
 def get_epic_games_link(game_name):
@@ -98,20 +114,27 @@ def get_epic_games_link(game_name):
 
 # --- PlayStation Store Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ) ---
 
-# --- PlayStation Store Fiyat ve Link Alma Fonksiyonu (NİHAİ DÜZELTİLMİŞ VERSİYON) ---
+# --- PlayStation Store Fiyat ve Link Alma Fonksiyonu (EN SAĞLAM VERSİYON) ---
 async def get_playstation_price(game_name):
+    func_name = "Playstation"
+    start_time = time.time()
+    log_debug(func_name, f"İstek başladı: '{game_name}'")
     global browser
-    if not browser or not browser.is_connected(): return None
+    if not browser or not browser.is_connected(): 
+        log_debug(func_name, "Tarayıcı bulunamadı veya bağlı değil.")
+        return None
     page = None
     try:
         page = await browser.new_page()
         page.set_default_timeout(90000)
         search_url = f"https://store.playstation.com/tr-tr/search/{requests.utils.quote(game_name)}"
+        log_debug(func_name, f"Arama sayfasına gidiliyor: {search_url}")
         await page.goto(search_url)
 
         results_selector = 'div[data-qa^="search#productTile"]'
         try:
             await page.wait_for_selector(results_selector, timeout=15000)
+            log_debug(func_name, "Arama sonuçları bulundu.")
         except Exception:
             await page.close()
             return None
@@ -140,11 +163,16 @@ async def get_playstation_price(game_name):
                 continue
 
         best_match_element = exact_match or startswith_match or all_results[0]
-        await best_match_element.locator('a.psw-link').first.click()
+        await best_match_element.locator('a.psw-link').first().click()
+        log_debug(func_name, "En iyi sonuca tıklandı, ürün sayfasına gidiliyor.")
         
-        await page.wait_for_selector('span[data-qa^="mfeCtaMain#offer"]')
+        # --- EN ÖNEMLİ DEĞİŞİKLİK BURADA ---
+        # Sayfadaki tüm dinamik içeriklerin (fiyatlar gibi) yüklenmesini bekle.
+        # Bu, zamanlama sorunlarını (race condition) çözer.
+        await page.wait_for_load_state('networkidle')
+        log_debug(func_name, "Ürün sayfası yüklendi. Fiyat aranıyor.")
+        
         link = page.url
-
         price_info = "Fiyat bilgisi yok."
         is_in_plus = False
         is_in_ea_play = False
@@ -162,8 +190,6 @@ async def get_playstation_price(game_name):
                 else:
                     price_info = offer0_text
         
-        # --- DÜZELTME: Bu bloklar artık ana kod akışında, girintisi doğru ---
-        # EA Play kontrolü
         ea_play_selector = 'span[data-qa="mfeCtaMain#offer2#discountInfo"]'
         ea_play_element = page.locator(ea_play_selector).first
         if await ea_play_element.count() > 0:
@@ -171,7 +197,6 @@ async def get_playstation_price(game_name):
             if "EA Play" in ea_play_text:
                 is_in_ea_play = True
 
-        # İndirimli veya ana satın alma fiyatını bul
         purchase_price_selector = 'span[data-qa="mfeCtaMain#offer1#finalPrice"]'
         purchase_price_element = page.locator(purchase_price_selector).first
         if await purchase_price_element.count() > 0:
@@ -179,31 +204,40 @@ async def get_playstation_price(game_name):
         elif not is_in_plus and await offer0_element.count() > 0:
             price_info = await offer0_element.inner_text()
 
-        # Sonucu formatla
         final_price_text = price_info
         if is_in_plus:
             if "Dahil" not in final_price_text and "Oyna" not in final_price_text:
                  final_price_text += "\n*PS Plus'a Dahil*"
         if is_in_ea_play:
             final_price_text += "\n*EA Play'e Dahil*"
-
+            
+        log_debug(func_name, f"Sonuç bulundu: {final_price_text}")
         await page.close()
-        return {"price": final_price_text, "link": link}
+        return {"price": final_price_text, "link": page.url}
 
     except Exception as e:
-        print(f"PLAYSTATION HATA: {e}")
+        log_debug(func_name, f"HATA OLUŞTU: {e}")
         if page and not page.is_closed(): await page.close()
         return None
+    finally:
+        duration = time.time() - start_time
+        log_debug(func_name, f"İstek {duration:.2f} saniyede tamamlandı.")
         
 # --- Xbox Store Fiyat ve Link Alma Fonksiyonu ---
 async def get_xbox_price(game_name_clean):
+    func_name = "Xbox"
     global browser
-    if not browser or not browser.is_connected(): return None
+    start_time = time.time()
+    log_debug(func_name, f"İstek başladı: '{game_name}'")
+    if not browser or not browser.is_connected(): 
+        log_debug(func_name, "Tarayıcı bulunamadı veya bağlı değil.")
+        return None
     page = None
     try:
         page = await browser.new_page()
         page.set_default_timeout(90000)
         search_url = f"https://www.xbox.com/tr-TR/Search/Results?q={requests.utils.quote(game_name_clean)}"
+        log_debug(func_name, f"Arama sayfasına gidiliyor: {search_url}")
         await page.goto(search_url)
         await page.wait_for_selector('div[class*="ProductCard-module"]')
         results = await page.query_selector_all('a[class*="commonStyles-module__basicButton"]')
@@ -236,39 +270,48 @@ async def get_xbox_price(game_name_clean):
                 return {"price": "Game Pass'e Dahil", "link": link}
         return {"price": price_info, "link": link}
     except Exception as e:
-        print(f"XBOX HATA: {e}")
+        log_debug(func_name, f"HATA OLUŞTU: {e}")
         if page and not page.is_closed(): await page.close()
         return None
+    finally:
+        duration = time.time() - start_time
+        log_debug(func_name, f"İstek {duration:.2f} saniyede tamamlandı.")
 
-# --- Allkeyshop Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ) ---
 def get_allkeyshop_price(game_name):
+    func_name = "Allkeyshop"
+    start_time = time.time()
+    log_debug(func_name, f"İstek başladı: '{game_name}'")
     try:
-        # Oyun adını URL formatına çevir: boşlukları '-' ile değiştir
         formatted_game_name = game_name.replace(' ', '-')
         url = f"https://www.allkeyshop.com/blog/en-us/buy-{formatted_game_name}-cd-key-compare-prices/"
-
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-
+        log_debug(func_name, f"URL: {url}")
+        
+        headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+        response = requests.get(url, headers=headers, timeout=15) # Timeout'u biraz artıralım
+        
+        log_debug(func_name, f"HTTP Durum Kodu: {response.status_code}")
         if response.status_code != 200:
+            log_debug(func_name, "Başarısız durum kodu nedeniyle işlem durduruldu.")
             return None
 
         pattern = re.compile(r'<p class="faq-answer" data-itemprop="acceptedAnswer">.*?\$(\d+\.\d{2}).*?</p>', re.DOTALL)
         match = pattern.search(response.text)
 
         if match:
-            # Eşleşen fiyatı string'den float'a çevir
             price_str = match.group(1)
             price_float = float(price_str)
-            # Steam fonksiyonuyla aynı formatta bir tuple (demet) olarak döndür
+            log_debug(func_name, f"Fiyat bulundu: ${price_float}")
             return {"price": (price_float, "USD"), "link": url}
-
+        
+        log_debug(func_name, "Sayfa içeriğinde fiyat deseni bulunamadı.")
         return None
+        
     except Exception as e:
-        print(f"ALLKEYSHOP HATA: {e}")
+        log_debug(func_name, f"HATA OLUŞTU: {e}")
         return None
+    finally:
+        duration = time.time() - start_time
+        log_debug(func_name, f"İstek {duration:.2f} saniyede tamamlandı.")
 
 # --- Discord Bot Ana Kodları ---
 intents = discord.Intents.default()
@@ -310,7 +353,7 @@ async def on_message(message):
         if isinstance(steam_sonucu, dict) and steam_sonucu.get("name"):
             display_game_name = steam_sonucu['name']
 
-        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler - V.0.31", color=discord.Color.from_rgb(16, 124, 16))
+        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler - V.0.32", color=discord.Color.from_rgb(16, 124, 16))
 
         # --- Steam Sonucu ---
         if isinstance(steam_sonucu, dict):
