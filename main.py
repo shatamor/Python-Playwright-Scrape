@@ -310,7 +310,7 @@ async def on_message(message):
         if isinstance(steam_sonucu, dict) and steam_sonucu.get("name"):
             display_game_name = steam_sonucu['name']
 
-        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler", color=discord.Color.from_rgb(16, 124, 16))
+        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler - V.0.31", color=discord.Color.from_rgb(16, 124, 16))
 
         # --- Steam Sonucu ---
         if isinstance(steam_sonucu, dict):
