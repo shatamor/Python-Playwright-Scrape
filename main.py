@@ -12,7 +12,7 @@ import time
 import re
 import logging
 from datetime import datetime
-from playwright_stealth import stealth_async
+from playwright_stealth.chromium import stealth_async
 
 # --- Debug ve Hata Ayıklama Kurulumu ---
 if not os.path.exists('debug_output'):
