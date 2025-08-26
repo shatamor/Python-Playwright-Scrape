@@ -42,10 +42,52 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# --- Oyun Adı Temizleme Fonksiyonu ---
+# --- Oyun Adı Temizleme Fonksiyonu (GÜNCELLENDİ: Özel Karakterleri Boşlukla Değiştirme) ---
 def clean_game_name(game_name):
-    cleaned_name = re.sub(r"[^\w\s]", "", game_name, flags=re.UNICODE)
+    # Romen rakamlarını sayılara çevir, orijinal metni koru
+    name_with_arabic, _ = clean_and_extract_roman(game_name)
+
+    # 1. Adım: Özel karakterleri (harf, rakam veya boşluk olmayan her şeyi) boşlukla değiştir.
+    # Bu, 'Cry®3' gibi ifadelerin 'Cry 3' olmasını sağlar.
+    cleaned_name = re.sub(r'[^\w\s]', ' ', name_with_arabic, flags=re.UNICODE)
+
+    # 2. Adım: Oluşabilecek çoklu boşlukları tek boşluğa indir.
+    cleaned_name = re.sub(r'\s+', ' ', cleaned_name)
+
     return cleaned_name.strip().lower()
+
+# --- YENİ: Romen Rakamı ve Sayı Çıkarma Yardımcıları ---
+def clean_and_extract_roman(name):
+    """Converts Roman numerals at the end of a string to Arabic numerals."""
+    name = name.upper()
+    roman_map = {'I': 1, 'V': 5, 'X': 10}
+    replacements = {'IV': '4', 'IX': '9', 'V': '5', 'I': '1'} # Order matters
+
+    # Check for specific roman numerals at the end
+    if name.endswith(" IV"): return name.replace(" IV", " 4"), 4
+    if name.endswith(" IX"): return name.replace(" IX", " 9"), 9
+    if name.endswith(" V"): return name.replace(" V", " 5"), 5
+    if name.endswith(" III"): return name.replace(" III", " 3"), 3
+    if name.endswith(" II"): return name.replace(" II", " 2"), 2
+    if name.endswith(" I"): return name.replace(" I", " 1"), 1
+
+    return name.lower(), None # Return original cleaned name if no roman numeral
+
+def extract_numbers_from_title(title):
+    """Extracts all Arabic and Roman numerals from a game title."""
+    # First, find all standard digits
+    numbers = set(map(int, re.findall(r'\d+', title)))
+
+    # Then, check for Roman numerals which are often used for sequels
+    # We check for them as standalone words to avoid matching 'I' in 'is'
+    # Using uppercase for consistency
+    title_upper = f" {title.upper()} "
+    if " II " in title_upper or title_upper.endswith(" II"): numbers.add(2)
+    if " III " in title_upper or title_upper.endswith(" III"): numbers.add(3)
+    if " IV " in title_upper or title_upper.endswith(" IV"): numbers.add(4)
+    if " V " in title_upper or title_upper.endswith(" V"): numbers.add(5)
+
+    return numbers
 
 # --- Döviz Kuru Alma Fonksiyonu ---
 def get_usd_to_try_rate():
@@ -67,9 +109,14 @@ def get_usd_to_try_rate():
             return currency_cache["rate"]
     else: return currency_cache["rate"]
 
-# --- Steam Fiyat ve Link Alma Fonksiyonu ---
+# --- Steam Fiyat ve Link Alma Fonksiyonu (YENİ: Akıllı Puanlama Sistemiyle) ---
 def get_steam_price(game_name):
     try:
+        # 1. Kullanıcının arama terimindeki sayıyı bul
+        user_query_numbers = extract_numbers_from_title(game_name)
+        # Eğer kullanıcı 'Red Dead Redemption' yazdıysa bu set boş olacak.
+        # Eğer 'Red Dead Redemption 2' yazdıysa {2} olacak.
+
         search_url = f"https://store.steampowered.com/api/storesearch/?term={requests.utils.quote(game_name)}&l=turkish&cc=TR"
         response = requests.get(search_url)
         if response.status_code != 200 or not response.json().get('items'):
@@ -81,7 +128,49 @@ def get_steam_price(game_name):
             logging.info(f"Steam'de '{game_name}' için sonuç bulunamadı.")
             return None
 
-        best_match = search_results[0]
+        best_match = None
+        highest_score = -1
+
+        # 2. Tüm sonuçları gez ve puanla
+        for item in search_results:
+            item_name = item.get('name', '')
+            cleaned_item_name = clean_game_name(item_name)
+
+            # Puanlama Başlangıcı
+            current_score = 0
+
+            # Metinsel Benzerlik Puanı (Temel Puan)
+            # Bu, "Bioshock" ile "Bioshock Remastered" eşleşmesini sağlar.
+            # rapidfuzz kütüphanesi bu iş için harikadır ama basit bir `in` kontrolü de iş görür.
+            # Daha basit ve hatasız olması için `in` kullanalım.
+            if game_name in cleaned_item_name:
+                current_score += 90
+            elif cleaned_item_name in game_name:
+                current_score += 85
+            else: # Eğer temel isim bile eşleşmiyorsa, bu sonucu atla
+                continue
+
+            # Sayısal Eşleşme Puanı (Filtreleme)
+            result_numbers = extract_numbers_from_title(cleaned_item_name)
+
+            if user_query_numbers: # Kullanıcı bir sayı belirtti (örn: RDR 2)
+                if not user_query_numbers.intersection(result_numbers):
+                    current_score -= 100 # Yanlış devam oyunu, puanı düşürerek ele
+            else: # Kullanıcı sayı belirtmedi (örn: RDR)
+                # Sonuçta 1'den büyük bir sayı varsa (örn: RDR 2), bu istenmeyen bir devam oyunudur.
+                if any(n > 1 for n in result_numbers):
+                    current_score -= 100 # İstenmeyen devam oyunu, puanı düşürerek ele
+
+            # En yüksek skorlu sonucu sakla
+            if current_score > highest_score:
+                highest_score = current_score
+                best_match = item
+
+        # 3. Yeterince iyi bir eşleşme bulunduysa devam et
+        if not best_match or highest_score < 50:
+             logging.info(f"Steam'de '{game_name}' için yeterli doğrulukta bir eşleşme bulunamadı.")
+             return None
+
         link = f"https://store.steampowered.com/app/{best_match.get('id')}"
         game_name_from_steam = best_match.get('name')
         price_data = best_match.get('price')
@@ -123,7 +212,7 @@ async def take_screenshot_on_error(page, platform_name, game_name):
         logging.info(f"Hata ekran görüntüsü kaydedildi: {screenshot_path}")
 
 
-# --- PlayStation Store Fiyat ve Link Alma Fonksiyonu (DEBUG EKLENDİ) ---
+# --- PlayStation Store Fiyat ve Link Alma Fonksiyonu (YENİ: Doğrudan Arama Sonucundan Veri Çekme) ---
 async def get_playstation_price(game_name):
     global browser
     if not browser or not browser.is_connected():
@@ -135,90 +224,107 @@ async def get_playstation_price(game_name):
         page.set_default_timeout(90000)
         search_url = f"https://store.playstation.com/tr-tr/search/{requests.utils.quote(game_name)}"
         logging.info(f"PlayStation için gidiliyor: {search_url}")
-        await page.goto(search_url)
+
+        # Olası cookie/pop-up'ları önceden ele almak için bir kerelik bekleme
+        await page.goto(search_url, wait_until='domcontentloaded')
+
+        try:
+            # Cookie banner'ını veya diğer pop-up'ları arayıp tıkla
+            cookie_button = page.locator('button:has-text("Accept All Cookies"), button:has-text("Tümünü Kabul Et")')
+            if await cookie_button.count() > 0:
+                logging.info("Cookie banner'ı bulundu ve tıklandı.")
+                await cookie_button.first.click(timeout=5000)
+                # Tıkladıktan sonra sonuçların yüklenmesi için kısa bir bekleme
+                await page.wait_for_timeout(2000)
+        except Exception:
+            logging.info("Cookie banner'ı bulunamadı veya tıklanamadı, devam ediliyor.")
 
         results_selector = 'div[data-qa^="search#productTile"]'
-        await page.wait_for_selector(results_selector, timeout=15000)
+        await page.wait_for_selector(results_selector, timeout=20000)
 
         all_results = await page.locator(results_selector).all()
         if not all_results:
-            await page.close()
-            logging.warning(f"PlayStation'da '{game_name}' için arama sonucu bulunamadı.")
-            return None
+            await page.close(); return None
 
-        # ... (Eşleşme mantığınız aynı kalıyor) ...
-        exact_match = None
-        startswith_match = None
+        # Puanlama ile en iyi eşleşmeyi bulma...
+        user_query_numbers = extract_numbers_from_title(game_name)
+        best_match_element = None; highest_score = -1
         for result in all_results:
             try:
-                title_selector = 'span[data-qa$="product-name"]'
-                title_element = result.locator(title_selector)
-                if await title_element.count() > 0:
-                    title_text = await title_element.inner_text()
-                    cleaned_title = clean_game_name(title_text)
-                    if cleaned_title == game_name:
-                        exact_match = result
-                        break
-                    if cleaned_title.startswith(game_name) and not startswith_match:
-                        startswith_match = result
-            except Exception:
-                continue
+                title_element = result.locator('span[data-qa$="product-name"]')
+                if await title_element.count() == 0: continue
+                item_name = await title_element.inner_text()
+                cleaned_item_name = clean_game_name(item_name)
 
-        best_match_element = exact_match or startswith_match or all_results[0]
-        await best_match_element.locator('a.psw-link').first.click()
-        await page.wait_for_selector('span[data-qa^="mfeCtaMain#offer"]')
-        link = page.url
+                base_score = 100; current_score = 0
+                if cleaned_item_name.startswith(game_name): current_score = base_score - 5
+                elif game_name in cleaned_item_name: current_score = base_score - 10
+                else: continue
+                length_penalty = len(cleaned_item_name) - len(game_name)
+                current_score -= length_penalty
 
-        price_info = "Fiyat bilgisi yok."
-        is_in_plus = False
-        is_in_ea_play = False
-
-        # ... (Fiyat alma mantığınız aynı kalıyor) ...
-        offer0_price_selector = 'span[data-qa="mfeCtaMain#offer0#finalPrice"]'
-        offer0_element = page.locator(offer0_price_selector).first
-        if await offer0_element.count() > 0:
-            offer0_text = await offer0_element.inner_text()
-            if "Dahil" in offer0_text or "Oyna" in offer0_text:
-                is_in_plus = True
-                original_price_selector = 'span[data-qa="mfeCtaMain#offer0#originalPrice"]'
-                original_price_element = page.locator(original_price_selector).first
-                if await original_price_element.count() > 0:
-                    price_info = await original_price_element.inner_text()
+                result_numbers = extract_numbers_from_title(cleaned_item_name)
+                if user_query_numbers:
+                    if not user_query_numbers.intersection(result_numbers): current_score = -1
                 else:
-                    price_info = offer0_text
+                    if any(n > 1 for n in result_numbers): current_score = -1
 
-        ea_play_selector = 'span[data-qa="mfeCtaMain#offer2#discountInfo"]'
-        ea_play_element = page.locator(ea_play_selector).first
-        if await ea_play_element.count() > 0:
-            ea_play_text = await ea_play_element.inner_text()
-            if "EA Play" in ea_play_text:
-                is_in_ea_play = True
+                if current_score > highest_score:
+                    highest_score = current_score; best_match_element = result
+            except Exception: continue
 
-        purchase_price_selector = 'span[data-qa="mfeCtaMain#offer1#finalPrice"]'
-        purchase_price_element = page.locator(purchase_price_selector).first
-        if await purchase_price_element.count() > 0:
-            price_info = await purchase_price_element.inner_text()
-        elif not is_in_plus and await offer0_element.count() > 0:
-            price_info = await offer0_element.inner_text()
+        if not best_match_element or highest_score < 50:
+            await page.close(); return None
 
-        final_price_text = price_info
-        if is_in_plus:
-            if "Dahil" not in final_price_text and "Oyna" not in final_price_text:
-                 final_price_text += "\n*PS Plus'a Dahil*"
-        if is_in_ea_play:
-            final_price_text += "\n*EA Play'e Dahil*"
+        # --- YENİ MANTIK: Veriyi doğrudan bulunan karttan çek ---
+        price_info = "Fiyat bilgisi yok."
+        subscriptions = []
+
+        # Kartın içindeki metnin tamamını al
+        card_text = await best_match_element.inner_text()
+
+        # Fiyatı ara (örn: "1.399,00 TL")
+        price_match = re.search(r'(\d{1,3}(?:\.\d{3})*,\d{2}\s*TL)', card_text)
+        if price_match:
+            price_info = price_match.group(1)
+
+        # Abonelikleri ara
+        if "Extra" in card_text or "Premium" in card_text:
+            subscriptions.append("PS Plus'a Dahil")
+        if "GTA+" in card_text:
+            subscriptions.append("GTA+'a Dahil")
+        if "EA Play" in card_text:
+            subscriptions.append("EA Play'e Dahil")
+
+        # Link'i al
+        link_element = best_match_element.locator('a.psw-link').first
+        href = await link_element.get_attribute('href')
+        link = "https://store.playstation.com" + href
+
+        # Sonuçları Birleştir
+        final_display_text = price_info
+        if subscriptions:
+            # Eğer bir abonelik varsa ama fiyat bulunamadıysa, fiyat yerine "Dahil" yazabiliriz.
+            if final_display_text == "Fiyat bilgisi yok.":
+                final_display_text = "Dahil"
+
+            subscription_text = "\n*" + " & ".join(sorted(subscriptions)) + "*"
+            # Eğer fiyat zaten Dahil ise, tekrar ekleme yapma
+            if "Dahil" in final_display_text:
+                 final_display_text = "*" + " & ".join(sorted(subscriptions)) + "*"
+            else:
+                 final_display_text = (final_display_text + subscription_text).strip()
 
         await page.close()
-        return {"price": final_price_text, "link": link}
+        return {"price": final_display_text, "link": link}
 
     except Exception as e:
         logging.error(f"PLAYSTATION HATA: {e}", exc_info=True)
-        # YENİ: Hata anında ekran görüntüsü al
         await take_screenshot_on_error(page, "playstation", game_name)
         if page and not page.is_closed(): await page.close()
         return None
 
-# --- Xbox Store Fiyat ve Link Alma Fonksiyonu (DEBUG EKLENDİ) ---
+# --- Xbox Store Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ: GTA+ Kontrolü Eklendi) ---
 async def get_xbox_price(game_name_clean):
     global browser
     if not browser or not browser.is_connected():
@@ -233,106 +339,156 @@ async def get_xbox_price(game_name_clean):
         await page.goto(search_url)
         await page.wait_for_selector('div[class*="ProductCard-module"]')
 
-        # ... (Mantığınız aynı kalıyor) ...
-        results = await page.query_selector_all('a[class*="commonStyles-module__basicButton"]')
-        if not results: await page.close(); return None
-        target_link = None
-        for result in results:
-            aria_label = await result.get_attribute("aria-label") or ""
-            if clean_game_name(aria_label).startswith(game_name_clean):
-                target_link = result
-                break
-        if not target_link: await page.close(); return None
-        await target_link.click()
+        all_results = await page.query_selector_all('a[class*="commonStyles-module__basicButton"]')
+        if not all_results:
+            await page.close()
+            return None
+
+        user_query_numbers = extract_numbers_from_title(game_name_clean)
+        best_match_element = None
+        highest_score = -1
+
+        for result in all_results:
+            full_aria_label = await result.get_attribute("aria-label") or ""
+            if not full_aria_label: continue
+            item_name = full_aria_label.split(',')[0].strip()
+            cleaned_item_name = clean_game_name(item_name)
+            current_score = 0
+            if game_name_clean in cleaned_item_name: current_score += 90
+            elif cleaned_item_name in game_name_clean: current_score += 85
+            else: continue
+            result_numbers = extract_numbers_from_title(cleaned_item_name)
+            if user_query_numbers:
+                if not user_query_numbers.intersection(result_numbers): current_score -= 100
+            else:
+                if any(n > 1 for n in result_numbers): current_score -= 100
+            if current_score > highest_score:
+                highest_score = current_score
+                best_match_element = result
+
+        if not best_match_element or highest_score < 50:
+            logging.warning(f"Xbox'da '{game_name_clean}' için yeterli doğrulukta eşleşme bulunamadı.")
+            await page.close()
+            return None
+
+        await best_match_element.click()
         await page.wait_for_load_state('networkidle')
         link = page.url
+
         price_info = "Fiyat bilgisi yok."
-        is_on_game_pass = False
+        subscriptions = []
+
+        # --- YENİ: Tüm Abonelikleri Kontrol Etme ---
+        # 1. Game Pass kontrolü
         game_pass_selector = 'svg[aria-label="Game Pass ile birlikte gelir"]'
         if await page.locator(game_pass_selector).count() > 0:
-            is_on_game_pass = True
+            subscriptions.append("Game Pass'e Dahil")
+
+        # 2. GTA+ kontrolü
+        # Sayfada "GTA+ ile birlikte gelir" gibi bir metin arıyoruz.
+        if await page.locator('*:has-text("GTA+")').count() > 0:
+            # Emin olmak için daha spesifik bir metin arayabiliriz
+            gta_plus_text_count = await page.locator('*:has-text("GTA+ ile birlikte gelir")').count()
+            if gta_plus_text_count > 0 and "GTA+ ile birlikte gelir" not in subscriptions:
+                 subscriptions.append("GTA+ ile birlikte gelir")
+
+        # 3. Fiyat bilgisini al
         price_selector = 'span[class*="Price-module__boldText"]'
         price_element = page.locator(price_selector).first
         if await price_element.count() > 0:
             price_text = await price_element.inner_text()
             price_info = price_text
+
         await page.close()
-        if is_on_game_pass:
-            if price_info != "Fiyat bilgisi yok.":
-                return {"price": f"{price_info}\n*Game Pass'e Dahil*", "link": link}
-            else:
-                return {"price": "Game Pass'e Dahil", "link": link}
-        return {"price": price_info, "link": link}
+
+        # 4. Sonuçları birleştir
+        final_display_text = price_info
+        if subscriptions:
+            # Fiyatı "Dahil" gibi bir şeyle değiştirmemek için kontrol
+            if final_display_text == "Fiyat bilgisi yok.":
+                 final_display_text = "" # Fiyat yoksa boş bırak, sadece abonelik görünsün
+
+            subscription_text = "\n*" + " & ".join(subscriptions) + "*"
+            final_display_text = (final_display_text + subscription_text).strip()
+
+        return {"price": final_display_text, "link": link}
+
     except Exception as e:
         logging.error(f"XBOX HATA: {e}", exc_info=True)
-        # YENİ: Hata anında ekran görüntüsü al
         await take_screenshot_on_error(page, "xbox", game_name_clean)
         if page and not page.is_closed(): await page.close()
         return None
 
-# --- Allkeyshop Fiyat ve Link Alma Fonksiyonu (HESAP SATIŞI FİLTRESİ EKLENDİ) ---
-def get_allkeyshop_price(game_name):
+# --- Allkeyshop Fiyat ve Link Alma Fonksiyonu (YENİ: Alternatif URL Desteği) ---
+async def get_allkeyshop_price(game_name):
+    global browser
+    if not browser or not browser.is_connected():
+        logging.warning("Allkeyshop fiyatı alınamıyor: Tarayıcı bağlı değil.")
+        return None
+
+    page = None
     try:
         formatted_game_name = game_name.replace(' ', '-')
-        url = f"https://www.allkeyshop.com/blog/en-us/buy-{formatted_game_name}-cd-key-compare-prices/"
-        logging.info(f"Allkeyshop için gidiliyor: {url}")
 
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=15)
+        # --- YENİ: İki farklı URL formatını tanımlıyoruz ---
+        url_pattern_1 = f"https://www.allkeyshop.com/blog/en-us/buy-{formatted_game_name}-cd-key-compare-prices/"
+        url_pattern_2 = f"https://www.allkeyshop.com/blog/en-us/compare-and-buy-cd-key-for-digital-download-{formatted_game_name}/"
+        urls_to_try = [url_pattern_1, url_pattern_2]
 
-        if response.status_code != 200:
-            logging.warning(f"Allkeyshop'tan '{game_name}' alınamadı. Status Code: {response.status_code}")
-            return None
+        page = await browser.new_page()
 
-        pattern = re.search(r"var gamePageTrans = ({.*?});", response.text, re.DOTALL)
-
-        if pattern:
-            json_data_str = pattern.group(1)
+        # --- YENİ: URL listesini denemek için bir döngü oluşturuyoruz ---
+        for i, url in enumerate(urls_to_try):
+            logging.info(f"Allkeyshop için gidiliyor (Deneme {i+1}): {url}")
             try:
+                await page.goto(url, timeout=45000, wait_until='domcontentloaded')
+
+                html_content = await page.content()
+
+                pattern = re.search(r"var gamePageTrans = ({.*?});", html_content, re.DOTALL)
+
+                if not pattern:
+                    # Eğer ilk deneme başarısızsa, döngünün bir sonraki adımına geç.
+                    logging.warning(f"URL denemesi {i+1} başarısız: 'gamePageTrans' bloğu bulunamadı.")
+                    continue # Bir sonraki URL'i dene
+
+                json_data_str = pattern.group(1)
                 data = json.loads(json_data_str)
                 prices_list = data.get("prices")
 
                 if not prices_list or not isinstance(prices_list, list):
-                    logging.warning(f"Allkeyshop JSON verisinde 'prices' listesi bulunamadı. Oyun: '{game_name}'")
-                    return None
+                    logging.warning(f"URL denemesi {i+1} başarısız: JSON içinde 'prices' listesi yok.")
+                    continue
 
-                # YENİ: Sadece 'anahtar' (key) satışlarını almak için filtreleme yapıyoruz.
-                # "account" değeri 'false' olan teklifleri seçiyoruz.
-                key_offers = [
-                    offer for offer in prices_list
-                    if offer.get('account') is False and 'price' in offer
-                ]
+                key_offers = [offer for offer in prices_list if offer.get('account') is False and 'priceCard' in offer]
 
                 if not key_offers:
-                    logging.warning(f"Allkeyshop'ta '{game_name}' için anahtar (key) teklifi bulunamadı. Yalnızca hesap satışları olabilir.")
-                    return None
+                    logging.warning(f"URL denemesi {i+1} başarılı, ancak anahtar (key) teklifi bulunamadı.")
+                    # Veri bulundu ama işe yaramazsa diğer URL'i denemeye gerek yok.
+                    return None 
 
-                # Filtrelenmiş anahtar teklifleri arasından en ucuzunu bulalım.
-                lowest_price = min(float(offer['price']) for offer in key_offers)
+                lowest_price = min(float(offer['priceCard']) for offer in key_offers)
+                logging.info(f"Allkeyshop için en düşük KREDİ KARTI DAHİL fiyat bulundu: {lowest_price} USD (URL: {url})")
 
-                logging.info(f"Allkeyshop için en düşük ANAHTAR fiyatı bulundu: {lowest_price} USD")
+                # Başarılı olunca sonucu döndür ve fonksiyondan çık.
                 return {"price": (lowest_price, "USD"), "link": url}
 
-            except json.JSONDecodeError:
-                logging.error(f"Allkeyshop için JSON verisi ayrıştırılamadı. Oyun: '{game_name}'")
-                with open("debug_output/allkeyshop_json_error.html", "w", encoding='utf-8') as f:
-                    f.write(response.text)
-                return None
-            except (ValueError, TypeError):
-                 logging.error(f"Allkeyshop anahtar fiyat listesi beklenmedik bir formatta geldi. Oyun: '{game_name}'")
-                 return None
-        else:
-            logging.warning(f"Allkeyshop için 'gamePageTrans' JavaScript bloğu bulunamadı. Oyun: '{game_name}'")
-            with open("debug_output/allkeyshop_last_response.html", "w", encoding='utf-8') as f:
-                f.write(response.text)
-            logging.info("Allkeyshop'tan gelen HTML yanıtı 'debug_output/allkeyshop_last_response.html' dosyasına kaydedildi.")
-            return None
+            except Exception as e:
+                logging.warning(f"URL denemesi {i+1} sırasında hata: {e}")
+                continue # Hata durumunda bir sonraki URL'i dene
+
+        # Eğer döngü biterse ve hiçbir URL çalışmazsa, oyun bulunamamıştır.
+        logging.error(f"Allkeyshop'ta '{game_name}' için denenen tüm URL'ler başarısız oldu.")
+        return None
 
     except Exception as e:
-        logging.error(f"ALLKEYSHOP HATA: {e}", exc_info=True)
+        logging.error(f"ALLKEYSHOP (Playwright) GENEL HATA: {e}", exc_info=False)
+        if page:
+            await take_screenshot_on_error(page, "allkeyshop", game_name)
         return None
+    finally:
+        if page and not page.is_closed():
+            await page.close()
 
 
 # --- Discord Bot Ana Kodları ---
@@ -368,7 +524,7 @@ async def on_message(message):
             "epic": asyncio.to_thread(get_epic_games_link, oyun_adi_temiz),
             "ps": get_playstation_price(oyun_adi_temiz),
             "xbox": get_xbox_price(oyun_adi_temiz),
-            "allkeyshop": asyncio.to_thread(get_allkeyshop_price, oyun_adi_temiz)
+            "allkeyshop": get_allkeyshop_price(oyun_adi_temiz)
         }
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
         sonuclar = dict(zip(tasks.keys(), results))
@@ -378,7 +534,7 @@ async def on_message(message):
         if isinstance(steam_sonucu, dict) and steam_sonucu.get("name"):
             display_game_name = steam_sonucu['name']
 
-        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.33", color=discord.Color.from_rgb(16, 124, 16))
+        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.51", color=discord.Color.from_rgb(16, 124, 16))
         embed.set_footer(text="Fiyatlar anlık olarak mağazalardan çekilmektedir.")
 
         # --- Sonuçları İşleme (Hata Kontrolü Eklendi) ---
