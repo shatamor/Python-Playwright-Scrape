@@ -12,7 +12,7 @@ import time
 import re
 import logging
 from datetime import datetime
-from playwright_stealth.chromium import stealth_async
+# playwright_stealth import'u tamamen kaldırıldı.
 
 # --- Debug ve Hata Ayıklama Kurulumu ---
 if not os.path.exists('debug_output'):
@@ -41,13 +41,6 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
     
-# --- Stealth (Gizli) Sayfa Oluşturma Yardımcısı ---
-async def create_stealth_page():
-    global browser
-    page = await browser.new_page()
-    await stealth_async(page)
-    return page
-
 # --- Romen Rakamı ve Sayı Çıkarma Yardımcıları ---
 def clean_and_extract_roman(name):
     name = name.upper()
@@ -86,12 +79,9 @@ def get_usd_to_try_rate():
                 if rate:
                     currency_cache["rate"] = rate
                     currency_cache["last_fetched"] = time.time()
-                    logging.info(f"Yeni USD/TRY kuru alındı: {rate}")
                     return rate
-            logging.warning(f"Döviz kuru alınamadı. Status Code: {response.status_code}")
             return currency_cache["rate"]
-        except Exception as e:
-            logging.error(f"Döviz kuru alınırken hata: {e}")
+        except Exception:
             return currency_cache["rate"]
     return currency_cache["rate"]
 
@@ -104,8 +94,7 @@ def get_steam_price(game_name):
         if response.status_code != 200 or not response.json().get('items'): return None
         search_results = response.json().get('items', [])
         if not search_results: return None
-        best_match = None
-        highest_score = -1
+        best_match = None; highest_score = -1
         for item in search_results:
             item_name = item.get('name', '')
             cleaned_item_name = clean_game_name(item_name)
@@ -119,8 +108,7 @@ def get_steam_price(game_name):
             else:
                 if any(n > 1 for n in result_numbers): current_score -= 100
             if current_score > highest_score:
-                highest_score = current_score
-                best_match = item
+                highest_score = current_score; best_match = item
         if not best_match or highest_score < 50: return None
         link = f"https://store.steampowered.com/app/{best_match.get('id')}"
         game_name_from_steam = best_match.get('name')
@@ -158,15 +146,14 @@ async def get_playstation_price(game_name):
     if not browser or not browser.is_connected(): return None
     page = None
     try:
-        page = await create_stealth_page()
+        page = await browser.new_page()
         await page.goto(f"https://store.playstation.com/tr-tr/search/{requests.utils.quote(game_name)}", wait_until='domcontentloaded')
         try:
             cookie_button = page.locator('button:has-text("Accept All Cookies"), button:has-text("Tümünü Kabul Et")')
             if await cookie_button.count() > 0:
                 await cookie_button.first.click(timeout=5000)
                 await page.wait_for_timeout(2000)
-        except Exception:
-            logging.info("Cookie banner'ı bulunamadı/tıklanamadı.")
+        except Exception: pass
         await page.wait_for_selector('div[data-qa^="search#productTile"]', timeout=20000)
         all_results = await page.locator('div[data-qa^="search#productTile"]').all()
         if not all_results: await page.close(); return None
@@ -222,7 +209,7 @@ async def get_xbox_price(game_name_clean):
     if not browser or not browser.is_connected(): return None
     page = None
     try:
-        page = await create_stealth_page()
+        page = await browser.new_page()
         await page.goto(f"https://www.xbox.com/tr-TR/Search/Results?q={requests.utils.quote(game_name_clean)}")
         await page.wait_for_selector('div[class*="ProductCard-module"]')
         all_results = await page.locator('a[class*="commonStyles-module__basicButton"]').all()
@@ -277,7 +264,7 @@ async def get_allkeyshop_price(game_name):
     if not browser or not browser.is_connected(): return None
     page = None
     try:
-        page = await create_stealth_page()
+        page = await browser.new_page()
         formatted_game_name = game_name.replace(' ', '-')
         urls_to_try = [
             f"https://www.allkeyshop.com/blog/en-us/buy-{formatted_game_name}-cd-key-compare-prices/",
@@ -317,8 +304,9 @@ async def on_ready():
     logging.info(f'{client.user} olarak Discord\'a giriş yapıldı.')
     try:
         playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=True)
-        logging.info("✅ Tarayıcı (PS & Xbox için) başarıyla başlatıldı!")
+        # --- DEĞİŞİKLİK: Chromium yerine Firefox kullanıyoruz ---
+        browser = await playwright.firefox.launch(headless=True)
+        logging.info("✅ Tarayıcı (Firefox) başarıyla başlatıldı!")
     except Exception as e:
         logging.error(f"❌ HATA: Playwright tarayıcısı başlatılamadı: {e}", exc_info=True)
 
