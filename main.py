@@ -318,7 +318,7 @@ async def get_playstation_price(game_name):
         if page and not page.is_closed(): await page.close()
         return None
 
-# --- Xbox Store Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ: GTA+ Kontrolü Eklendi) ---
+# --- Xbox Store Fiyat ve Link Alma Fonksiyonu (NİHAİ FORMAT) ---
 async def get_xbox_price(game_name_clean):
     global browser
     if not browser or not browser.is_connected():
@@ -326,6 +326,7 @@ async def get_xbox_price(game_name_clean):
         return None
     page = None
     try:
+        # ... (fonksiyonun başındaki tüm arama ve veri çekme mantığı aynı kalacak) ...
         page = await browser.new_page()
         page.set_default_timeout(90000)
         search_url = f"https://www.xbox.com/tr-TR/Search/Results?q={requests.utils.quote(game_name_clean)}"
@@ -335,13 +336,10 @@ async def get_xbox_price(game_name_clean):
 
         all_results = await page.query_selector_all('a[class*="commonStyles-module__basicButton"]')
         if not all_results:
-            await page.close()
-            return None
+            await page.close(); return None
 
         user_query_numbers = extract_numbers_from_title(game_name_clean)
-        best_match_element = None
-        highest_score = -1
-
+        best_match_element = None; highest_score = -1
         for result in all_results:
             full_aria_label = await result.get_attribute("aria-label") or ""
             if not full_aria_label: continue
@@ -357,13 +355,10 @@ async def get_xbox_price(game_name_clean):
             else:
                 if any(n > 1 for n in result_numbers): current_score -= 100
             if current_score > highest_score:
-                highest_score = current_score
-                best_match_element = result
+                highest_score = current_score; best_match_element = result
 
         if not best_match_element or highest_score < 50:
-            logging.warning(f"Xbox'da '{game_name_clean}' için yeterli doğrulukta eşleşme bulunamadı.")
-            await page.close()
-            return None
+            await page.close(); return None
 
         await best_match_element.click()
         await page.wait_for_load_state('networkidle')
@@ -371,41 +366,56 @@ async def get_xbox_price(game_name_clean):
 
         price_info = "Fiyat bilgisi yok."
         subscriptions = []
+        platform_info = None
 
-        # --- YENİ: Tüm Abonelikleri Kontrol Etme ---
-        # 1. Game Pass kontrolü
-        game_pass_selector = 'svg[aria-label="Game Pass ile birlikte gelir"]'
-        if await page.locator(game_pass_selector).count() > 0:
+        if await page.locator('svg[aria-label="Game Pass ile birlikte gelir"]').count() > 0:
             subscriptions.append("Game Pass'e Dahil")
+        if await page.locator('*:has-text("GTA+ ile birlikte gelir")').count() > 0:
+            subscriptions.append("GTA+'a Dahil")
 
-        # 2. GTA+ kontrolü
-        # Sayfada "GTA+ ile birlikte gelir" gibi bir metin arıyoruz.
-        if await page.locator('*:has-text("GTA+")').count() > 0:
-            # Emin olmak için daha spesifik bir metin arayabiliriz
-            gta_plus_text_count = await page.locator('*:has-text("GTA+ ile birlikte gelir")').count()
-            if gta_plus_text_count > 0 and "GTA+ ile birlikte gelir" not in subscriptions:
-                 subscriptions.append("GTA+ ile birlikte gelir")
-
-        # 3. Fiyat bilgisini al
         price_selector = 'span[class*="Price-module__boldText"]'
-        price_element = page.locator(price_selector).first
-        if await price_element.count() > 0:
-            price_text = await price_element.inner_text()
-            price_info = price_text
+        if await page.locator(price_selector).first.count() > 0:
+            price_info = await page.locator(price_selector).first.inner_text()
 
+        try:
+            platform_list_locator = page.locator('h2:has-text("Platformlar") + ul')
+            if await platform_list_locator.count() > 0:
+                all_platforms_text = await platform_list_locator.first.inner_text()
+                has_pc = "Bilgisayar" in all_platforms_text
+                has_xbox = "Xbox" in all_platforms_text
+                if has_pc and has_xbox:
+                    platform_info = "PC & Konsol"
+                elif has_xbox:
+                    platform_info = "Konsol"
+        except Exception as e:
+            logging.info(f"Xbox platform bilgisi alınamadı (bu normal olabilir): {e}")
+        
         await page.close()
 
-        # 4. Sonuçları birleştir
-        final_display_text = price_info
+        # --- YENİ: Sonuçları istenen formatta birleştirme ---
+        display_lines = []
+        
+        # 1. Adım: İlk satırı oluştur (Fiyat ve Platform)
+        first_line_parts = []
+        # Eğer sadece abonelik varsa fiyatı gösterme
+        if not (price_info == "Fiyat bilgisi yok." and subscriptions):
+            first_line_parts.append(price_info)
+        # Platform bilgisini parantez içinde ekle
+        if platform_info:
+            first_line_parts.append(f"({platform_info})")
+        
+        # İlk satırda gösterilecek bir şey varsa listeye ekle
+        if first_line_parts:
+            display_lines.append(" ".join(first_line_parts))
+
+        # 2. Adım: Abonelik bilgisini alt satıra ekle
         if subscriptions:
-            # Fiyatı "Dahil" gibi bir şeyle değiştirmemek için kontrol
-            if final_display_text == "Fiyat bilgisi yok.":
-                 final_display_text = "" # Fiyat yoksa boş bırak, sadece abonelik görünsün
+            display_lines.append("*" + " & ".join(subscriptions) + "*")
 
-            subscription_text = "\n*" + " & ".join(subscriptions) + "*"
-            final_display_text = (final_display_text + subscription_text).strip()
+        # Tüm satırları birleştir
+        final_display_text = "\n".join(display_lines)
 
-        return {"price": final_display_text, "link": link}
+        return {"price": final_display_text.strip(), "link": link}
 
     except Exception as e:
         logging.error(f"XBOX HATA: {e}", exc_info=True)
@@ -446,7 +456,7 @@ async def get_itad_shop_ids():
         
         all_shops = response.json()
         # Ana platformları ve büyük mağazaları hariç tutalım
-        excluded_shops = ["Steam", "Epic Games Store", "Xbox Store", "PlayStation Store", "GOG", "Humble Store", "Ubisoft Store", "EA App"]
+        excluded_shops = ["Steam", "Epic Game Store", "Microsoft Store", "Playstation Store", "GOG"]
         
         # Hariç tutulanlar dışındaki tüm mağazaların ID'lerini topla
         cdkey_shop_ids = [str(shop['id']) for shop in all_shops if shop['title'] not in excluded_shops]
@@ -517,8 +527,42 @@ async def get_itad_prices(game_id, cdkey_shop_ids):
         logging.error(f"ITAD FİYAT ALMA HATA: {e}", exc_info=True)
         return None
 
-# ÖNEMLİ: Eski get_itad_game_id fonksiyonu aynı kalacak, onda bir değişiklik yapmanıza gerek yok.
-# Sadece bu get_itad_prices fonksiyonunu projenizdekiyle değiştirin.
+# YENİ: Belirtilen mağazalar için tarihi en düşük fiyatları alır.
+async def get_historical_lows(game_id):
+    if not ITAD_API_KEY or not game_id:
+        return {}
+        
+    # ITAD Mağaza ID'leri: Steam (61), Epic Games (16), Microsoft Store (15)
+    shop_ids_for_lows = "61,16,15"
+    
+    try:
+        url = f"https://api.isthereanydeal.com/games/storelow/v2?key={ITAD_API_KEY}&country=TR&shops={shop_ids_for_lows}"
+        payload = [game_id]
+        response = await asyncio.to_thread(requests.post, url, json=payload)
+
+        if response.status_code != 200:
+            return {}
+
+        data = response.json()
+        if not data or not data[0].get('lows'):
+            return {}
+
+        # Sonuçları mağaza ID'sine göre map'leyelim
+        historical_lows = {}
+        for low in data[0]['lows']:
+            shop_id = low.get('shop', {}).get('id')
+            price_info = low.get('price')
+            if shop_id and price_info:
+                price_amount = price_info.get('amount')
+                price_currency = price_info.get('currency')
+                formatted_price = f"{price_amount:,.2f} {price_currency}".replace(",", "X").replace(".", ",").replace("X", ".")
+                historical_lows[shop_id] = formatted_price
+        
+        return historical_lows
+
+    except Exception as e:
+        logging.error(f"ITAD Tarihi Düşük Fiyat Alma Hatası: {e}", exc_info=True)
+        return {}
 
 # --- Discord Bot Ana Kodları ---
 intents = discord.Intents.default()
@@ -560,36 +604,32 @@ async def on_message(message):
         if isinstance(steam_sonucu, dict) and steam_sonucu.get("name"):
             display_game_name = steam_sonucu['name']
             search_name_for_itad = clean_game_name(steam_sonucu['name'])
-            logging.info(f"ITAD araması için Steam'den gelen isim kullanılacak: '{search_name_for_itad}'")
 
         # Adım 2: ITAD oyun ID'sini alalım.
         itad_game_id_task = get_itad_game_id(search_name_for_itad)
         cdkey_shop_ids_task = get_itad_shop_ids()
-        
         itad_game_id, cdkey_shop_ids = await asyncio.gather(itad_game_id_task, cdkey_shop_ids_task)
-        
-        
+       
         # Adım 3: Diğer platformları ve ITAD'ı aynı anda sorgulayalım.
         tasks = {
             "ps": get_playstation_price(oyun_adi_temiz),
             "xbox": get_xbox_price(oyun_adi_temiz),
-            "itad": get_itad_prices(itad_game_id, cdkey_shop_ids)
+            "itad_current_prices": get_itad_prices(itad_game_id, cdkey_shop_ids),
+            "historical_lows": get_historical_lows(itad_game_id)
         }
         
         results_from_gather = await asyncio.gather(*tasks.values(), return_exceptions=True)
         sonuclar.update(dict(zip(tasks.keys(), results_from_gather))) # Gelen sonuçları ana sözlüğe ekle
 
         # ITAD'dan gelen sonuçları ayrıştıralım
-        itad_results = sonuclar.pop("itad", None) # itad anahtarını al ve sözlükten çıkar
+        itad_results = sonuclar.pop("itad_current_prices", None) # itad anahtarını al ve sözlükten çıkar
         if isinstance(itad_results, dict):
             sonuclar["epic"] = itad_results.get("epic")
             sonuclar["cdkey"] = itad_results.get("cdkey")
-        else:
-            sonuclar["epic"] = sonuclar["cdkey"] = itad_results
 
-        # --- YENİ MANTIK SONU ---
+        historical_lows = sonuclar.get("historical_lows", {})
 
-        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.7", color=discord.Color.from_rgb(16, 124, 16))
+        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.83", color=discord.Color.from_rgb(16, 124, 16))
         embed.set_footer(text="Fiyatlar anlık olarak mağazalardan çekilmektedir.")
 
         store_order = ["steam", "xbox", "ps", "epic", "cdkey"]
@@ -613,7 +653,7 @@ async def on_message(message):
                 link = result.get("link", "#")
                 
                 if store == "cdkey" and result.get("shop"):
-                    store_name = f"CD-Key ({result.get('shop')})"
+                    store_name = f"En Ucuz CD-Key ({result.get('shop')})"
 
                 display_text = ""
                 # Sadece Steam için USD->TL dönüşümü yap
@@ -628,6 +668,14 @@ async def on_message(message):
                 else:
                     # Diğer tüm mağazalar için gelen hazır metni kullan
                     display_text = str(price_info)
+                    
+                low_price = None
+                if store == 'steam' and 61 in historical_lows: low_price = historical_lows[61]
+                elif store == 'epic' and 16 in historical_lows: low_price = historical_lows[16]
+                elif store == 'xbox' and 15 in historical_lows: low_price = historical_lows[15]
+                
+                if low_price:
+                    display_text += f"\n*Tüm Zamanlar Fiyatı: {low_price}*"
                 
                 embed.add_field(name=store_name, value=f"[{display_text}]({link})", inline=True)
 
