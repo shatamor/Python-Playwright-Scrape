@@ -442,7 +442,7 @@ async def get_allkeyshop_price(game_name):
         for i, url in enumerate(urls_to_try):
             logging.info(f"Allkeyshop için gidiliyor (Deneme {i+1}): {url}")
             try:
-                await page.goto(url, timeout=10000, wait_until='domcontentloaded')
+                await page.goto(url, timeout=5000, wait_until='domcontentloaded')
 
                 html_content = await page.content()
                 pattern = re.search(r"var gamePageTrans = ({.*?});", html_content, re.DOTALL)
@@ -518,8 +518,7 @@ async def on_message(message):
         msg = await message.channel.send(f"**{oyun_adi_orjinal}** için mağazalar kontrol ediliyor...")
         logging.info(f"Fiyat sorgusu başlatıldı: '{oyun_adi_orjinal}' (Temizlenmiş: '{oyun_adi_temiz}')")
 
-        # --- YENİ AKIŞ: BAĞIMSIZ GÖREVLERİ PARALEL ÇALIŞTIR ---
-        # Allkeyshop hariç diğer tüm görevleri orijinal arama metniyle başlat.
+        # --- BAĞIMSIZ GÖREVLERİ PARALEL ÇALIŞTIR ---
         tasks_part1 = {
             "steam": asyncio.to_thread(get_steam_price, oyun_adi_temiz),
             "epic": asyncio.to_thread(get_epic_games_link, oyun_adi_temiz),
@@ -532,17 +531,16 @@ async def on_message(message):
         # --- STEAM SONUCUNU AL VE ALLKEYSHOP İÇİN HAZIRLAN ---
         steam_sonucu = sonuclar.get("steam")
         display_game_name = oyun_adi_orjinal
-        search_name_for_allkeyshop = oyun_adi_temiz # Varsayılan olarak orijinal metni kullan
+        search_name_for_allkeyshop = oyun_adi_temiz
 
         if isinstance(steam_sonucu, dict) and steam_sonucu.get("name"):
             display_game_name = steam_sonucu['name']
-            # Sadece Allkeyshop araması için Steam'den gelen resmi ismi temizle ve kullan
             search_name_for_allkeyshop = clean_game_name(steam_sonucu['name'])
             logging.info(f"Allkeyshop araması için Steam'den gelen isim kullanılacak: '{display_game_name}' (Temizlenmiş: '{search_name_for_allkeyshop}')")
 
         # --- BAĞIMLI OLAN ALLKEYSHOP GÖREVİNİ ÇALIŞTIR ---
         allkeyshop_sonucu = await get_allkeyshop_price(search_name_for_allkeyshop)
-        sonuclar["allkeyshop"] = allkeyshop_sonucu # Sonucu diğerlerine ekle
+        sonuclar["allkeyshop"] = allkeyshop_sonucu
 
         # --- SONUÇLARI GÖSTER ---
         embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.51", color=discord.Color.from_rgb(16, 124, 16))
@@ -560,14 +558,25 @@ async def on_message(message):
 
             if isinstance(result, Exception):
                 embed.add_field(name=store_name, value="`Hata oluştu.`", inline=True)
-                logging.error(f"'{store}' deposu için sonuç işlenirken hata yakalandı: {result}", exc_info=result)
             elif result is None:
                  embed.add_field(name=store_name, value="`Bulunamadı.`", inline=True)
+            
+            # --- İSTEĞİNİZE GÖRE GÜNCELLENMİŞ ALLKEYSHOP BLOĞU ---
             elif store == "allkeyshop" and result.get("price") == "Linkler":
                 links = result.get("links", [])
-                link_text = " / ".join([f"[Link {i+1}]({link})" for i, link in enumerate(links)])
-                if not link_text: link_text = "`Link bulunamadı.`"
-                embed.add_field(name=store_name, value=link_text, inline=True)
+                if len(links) >= 2:
+                    # Ana link "Mağazada Bul", ikinci link "Alt." olarak formatlandı
+                    main_link = f"[Mağazada Bul]({links[0]})"
+                    alt_link = f"[Alt.]({links[1]})"
+                    display_value = f"{main_link} / {alt_link}"
+                elif len(links) == 1:
+                    # Eğer sadece bir link varsa, sadece onu göster
+                    display_value = f"[Mağazada Bul]({links[0]})"
+                else:
+                    display_value = "`Link bulunamadı.`"
+                embed.add_field(name=store_name, value=display_value, inline=True)
+            # --- GÜNCELLEME SONU ---
+
             elif store == "epic":
                 embed.add_field(name=store_name, value=f"[Mağazada Ara]({result})", inline=True)
             else:
