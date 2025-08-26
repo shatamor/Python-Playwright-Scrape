@@ -419,7 +419,7 @@ async def get_xbox_price(game_name_clean):
         if page and not page.is_closed(): await page.close()
         return None
 
-# --- Allkeyshop Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ: Başarısızlık Durumunda Arama Linki) ---
+# --- Allkeyshop Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ: Başarısızlık Durumunda Ürün Linki) ---
 async def get_allkeyshop_price(game_name):
     global browser
     if not browser or not browser.is_connected():
@@ -428,6 +428,7 @@ async def get_allkeyshop_price(game_name):
 
     page = None
     try:
+        # URL'lerde kullanılacak oyun adını formatlıyoruz
         formatted_game_name_url = game_name.replace(' ', '-')
 
         # İki farklı URL formatını tanımlıyoruz
@@ -441,8 +442,7 @@ async def get_allkeyshop_price(game_name):
         for i, url in enumerate(urls_to_try):
             logging.info(f"Allkeyshop için gidiliyor (Deneme {i+1}): {url}")
             try:
-                # Timeout süresini kısa tutarak başarısızlık durumunda hızlıca diğer adıma geçmesini sağlıyoruz.
-                await page.goto(url, timeout=10000, wait_until='domcontentloaded')
+                await page.goto(url, timeout=5000, wait_until='domcontentloaded')
 
                 html_content = await page.content()
                 pattern = re.search(r"var gamePageTrans = ({.*?});", html_content, re.DOTALL)
@@ -463,35 +463,33 @@ async def get_allkeyshop_price(game_name):
 
                 if not key_offers:
                     logging.warning(f"URL denemesi {i+1} başarılı, ancak anahtar (key) teklifi bulunamadı.")
-                    continue # Diğer URL'i deneyebiliriz.
+                    continue
 
                 lowest_price = min(float(offer['priceCard']) for offer in key_offers)
                 logging.info(f"Allkeyshop için en düşük KREDİ KARTI DAHİL fiyat bulundu: {lowest_price} USD (URL: {url})")
 
-                # Başarılı olunca sonucu döndür ve fonksiyondan çık.
                 return {"price": (lowest_price, "USD"), "link": url}
 
             except Exception as e:
                 logging.warning(f"URL denemesi {i+1} sırasında hata: {e}")
-                continue # Hata durumunda bir sonraki URL'i dene
+                continue
 
-        # --- YENİ MANTIK: Eğer döngü biterse ve hiçbir URL çalışmazsa ---
-        # Oyun bulunamamıştır. Bu durumda, genel bir arama linki oluştur.
-        logging.warning(f"Allkeyshop'ta '{game_name}' için veri çekilemedi. Arama linki oluşturuluyor.")
+        # --- YENİ MANTIK: Eğer döngü biterse ve hiçbir URL'den veri alınamazsa ---
+        # Kullanıcıyı boş bir arama sayfasına yönlendirmek yerine, en olası
+        # olan ilk ürün sayfasının linkini direkt olarak veriyoruz.
+        logging.warning(f"Allkeyshop'ta '{game_name}' için veri çekilemedi. Olası ürün linki fallback olarak kullanılıyor.")
         
-        # Oyun adını URL için güvenli hale getiriyoruz.
-        search_query = requests.utils.quote(game_name)
-        # Allkeyshop'un arama URL formatını kullanıyoruz.
-        search_url = f"https://www.allkeyshop.com/blog/search/{search_query}/"
+        # İlk denenen ve en standart format olan URL'yi (url_pattern_1) fallback olarak kullan.
+        fallback_url = url_pattern_1
         
-        # Ana mesaj döngüsünün bunu doğru işlemesi için özel bir "price" metni ve linki içeren bir sözlük döndürüyoruz.
-        return {"price": "Mağazada Ara", "link": search_url}
+        # Metni "Mağazada Ara" yerine daha uygun olan "Sayfayı Ziyaret Et" olarak değiştiriyoruz.
+        return {"price": "Mağazada Bul", "link": fallback_url}
 
     except Exception as e:
         logging.error(f"ALLKEYSHOP (Playwright) GENEL HATA: {e}", exc_info=False)
         if page:
             await take_screenshot_on_error(page, "allkeyshop", game_name)
-        return None # Genel bir hata durumunda hala None dönebiliriz.
+        return None
     finally:
         if page and not page.is_closed():
             await page.close()
