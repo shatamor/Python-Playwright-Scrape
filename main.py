@@ -419,7 +419,7 @@ async def get_xbox_price(game_name_clean):
         if page and not page.is_closed(): await page.close()
         return None
 
-# --- Allkeyshop Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ: Başarısızlık Durumunda Ürün Linki) ---
+# --- Allkeyshop Fiyat ve Link Alma Fonksiyonu (GÜNCELLENDİ: İkili Link Desteği) ---
 async def get_allkeyshop_price(game_name):
     global browser
     if not browser or not browser.is_connected():
@@ -442,7 +442,7 @@ async def get_allkeyshop_price(game_name):
         for i, url in enumerate(urls_to_try):
             logging.info(f"Allkeyshop için gidiliyor (Deneme {i+1}): {url}")
             try:
-                await page.goto(url, timeout=5000, wait_until='domcontentloaded')
+                await page.goto(url, timeout=10000, wait_until='domcontentloaded')
 
                 html_content = await page.content()
                 pattern = re.search(r"var gamePageTrans = ({.*?});", html_content, re.DOTALL)
@@ -474,16 +474,11 @@ async def get_allkeyshop_price(game_name):
                 logging.warning(f"URL denemesi {i+1} sırasında hata: {e}")
                 continue
 
-        # --- YENİ MANTIK: Eğer döngü biterse ve hiçbir URL'den veri alınamazsa ---
-        # Kullanıcıyı boş bir arama sayfasına yönlendirmek yerine, en olası
-        # olan ilk ürün sayfasının linkini direkt olarak veriyoruz.
-        logging.warning(f"Allkeyshop'ta '{game_name}' için veri çekilemedi. Olası ürün linki fallback olarak kullanılıyor.")
+        # --- YENİ MANTIK: Eğer döngü biterse ve veri alınamazsa, iki linki de döndür ---
+        logging.warning(f"Allkeyshop'ta '{game_name}' için veri çekilemedi. İki olası link de fallback olarak kullanılıyor.")
         
-        # İlk denenen ve en standart format olan URL'yi (url_pattern_1) fallback olarak kullan.
-        fallback_url = url_pattern_1
-        
-        # Metni "Mağazada Ara" yerine daha uygun olan "Sayfayı Ziyaret Et" olarak değiştiriyoruz.
-        return {"price": "Mağazada Bul", "link": fallback_url}
+        # on_message fonksiyonunun işleyebilmesi için özel bir format kullanıyoruz.
+        return {"price": "Mağazada Ara", "links": [url_pattern_1, url_pattern_2]}
 
     except Exception as e:
         logging.error(f"ALLKEYSHOP (Playwright) GENEL HATA: {e}", exc_info=False)
@@ -523,28 +518,37 @@ async def on_message(message):
         msg = await message.channel.send(f"**{oyun_adi_orjinal}** için mağazalar kontrol ediliyor...")
         logging.info(f"Fiyat sorgusu başlatıldı: '{oyun_adi_orjinal}' (Temizlenmiş: '{oyun_adi_temiz}')")
 
-        tasks = {
+        # --- YENİ AKIŞ: BAĞIMSIZ GÖREVLERİ PARALEL ÇALIŞTIR ---
+        # Allkeyshop hariç diğer tüm görevleri orijinal arama metniyle başlat.
+        tasks_part1 = {
             "steam": asyncio.to_thread(get_steam_price, oyun_adi_temiz),
             "epic": asyncio.to_thread(get_epic_games_link, oyun_adi_temiz),
             "ps": get_playstation_price(oyun_adi_temiz),
             "xbox": get_xbox_price(oyun_adi_temiz),
-            "allkeyshop": get_allkeyshop_price(oyun_adi_temiz)
         }
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-        sonuclar = dict(zip(tasks.keys(), results))
-
-        display_game_name = oyun_adi_orjinal
+        results_part1 = await asyncio.gather(*tasks_part1.values(), return_exceptions=True)
+        sonuclar = dict(zip(tasks_part1.keys(), results_part1))
+        
+        # --- STEAM SONUCUNU AL VE ALLKEYSHOP İÇİN HAZIRLAN ---
         steam_sonucu = sonuclar.get("steam")
+        display_game_name = oyun_adi_orjinal
+        search_name_for_allkeyshop = oyun_adi_temiz # Varsayılan olarak orijinal metni kullan
+
         if isinstance(steam_sonucu, dict) and steam_sonucu.get("name"):
             display_game_name = steam_sonucu['name']
+            # Sadece Allkeyshop araması için Steam'den gelen resmi ismi temizle ve kullan
+            search_name_for_allkeyshop = clean_game_name(steam_sonucu['name'])
+            logging.info(f"Allkeyshop araması için Steam'den gelen isim kullanılacak: '{display_game_name}' (Temizlenmiş: '{search_name_for_allkeyshop}')")
 
+        # --- BAĞIMLI OLAN ALLKEYSHOP GÖREVİNİ ÇALIŞTIR ---
+        allkeyshop_sonucu = await get_allkeyshop_price(search_name_for_allkeyshop)
+        sonuclar["allkeyshop"] = allkeyshop_sonucu # Sonucu diğerlerine ekle
+
+        # --- SONUÇLARI GÖSTER ---
         embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.51", color=discord.Color.from_rgb(16, 124, 16))
         embed.set_footer(text="Fiyatlar anlık olarak mağazalardan çekilmektedir.")
 
-        # --- Sonuçları İşleme (Hata Kontrolü Eklendi) ---
-
-        # Mağaza sırasını belirleyelim
-        store_order = ["steam", "xbox", "ps", "epic", "allkeyshop"]
+        store_order = ["steam", "xbox", "ps", "allkeyshop", "epic"]
 
         for store in store_order:
             result = sonuclar.get(store)
@@ -554,18 +558,23 @@ async def on_message(message):
                 "epic": "Epic Games"
             }[store]
 
-            # YENİ: Hata durumlarını ve boş sonuçları embed'e ekleme
             if isinstance(result, Exception):
                 embed.add_field(name=store_name, value="`Hata oluştu.`", inline=True)
                 logging.error(f"'{store}' deposu için sonuç işlenirken hata yakalandı: {result}", exc_info=result)
             elif result is None:
                  embed.add_field(name=store_name, value="`Bulunamadı.`", inline=True)
+            elif store == "allkeyshop" and result.get("price") == "Linkler":
+                links = result.get("links", [])
+                link_text = " / ".join([f"[Link {i+1}]({link})" for i, link in enumerate(links)])
+                if not link_text: link_text = "`Link bulunamadı.`"
+                embed.add_field(name=store_name, value=link_text, inline=True)
             elif store == "epic":
                 embed.add_field(name=store_name, value=f"[Mağazada Ara]({result})", inline=True)
-            else: # Başarılı sonuçlar
-                price_info, link = result["price"], result["link"]
+            else:
+                price_info = result.get("price", "N/A")
+                link = result.get("link", "#")
                 display_text = ""
-                if isinstance(price_info, tuple): # USD -> TRY çevirimi gerekenler
+                if isinstance(price_info, tuple):
                     price, currency = price_info
                     try_rate = get_usd_to_try_rate()
                     if try_rate and currency == "USD":
@@ -573,11 +582,10 @@ async def on_message(message):
                         display_text = f"${price:,.2f} {currency}\n(≈ {tl_price:,.2f} TL)"
                     else: 
                         display_text = f"${price:,.2f} {currency}"
-                else: # Diğerleri (string fiyat bilgisi)
-                    display_text = price_info
+                else:
+                    display_text = str(price_info)
 
                 embed.add_field(name=store_name, value=f"[{display_text}]({link})", inline=True)
-
 
         await msg.edit(content=None, embed=embed)
 
