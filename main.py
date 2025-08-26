@@ -12,13 +12,12 @@ import time
 import re
 import logging
 from datetime import datetime
+from playwright_stealth import stealth_async # --- YENİ: Stealth kütüphanesini import et
 
 # --- YENİ: Debug ve Hata Ayıklama Kurulumu ---
-# Replit'te çalışırken logları ve ekran görüntülerini saklamak için bir klasör oluşturalım.
 if not os.path.exists('debug_output'):
     os.makedirs('debug_output')
 
-# Loglama yapılandırması: Hem dosyaya hem de konsola log basacak.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s',
@@ -41,53 +40,41 @@ def run(): app.run(host='0.0.0.0', port=8080)
 def keep_alive():
     t = Thread(target=run)
     t.start()
-
-# --- Oyun Adı Temizleme Fonksiyonu (GÜNCELLENDİ: Özel Karakterleri Boşlukla Değiştirme) ---
-def clean_game_name(game_name):
-    # Romen rakamlarını sayılara çevir, orijinal metni koru
-    name_with_arabic, _ = clean_and_extract_roman(game_name)
-
-    # 1. Adım: Özel karakterleri (harf, rakam veya boşluk olmayan her şeyi) boşlukla değiştir.
-    # Bu, 'Cry®3' gibi ifadelerin 'Cry 3' olmasını sağlar.
-    cleaned_name = re.sub(r'[^\w\s]', ' ', name_with_arabic, flags=re.UNICODE)
-
-    # 2. Adım: Oluşabilecek çoklu boşlukları tek boşluğa indir.
-    cleaned_name = re.sub(r'\s+', ' ', cleaned_name)
-
-    return cleaned_name.strip().lower()
+    
+# --- YENİ: Stealth (Gizli) Sayfa Oluşturma Yardımcısı ---
+# Her seferinde stealth ayarlarını tekrar yazmamak için bir yardımcı fonksiyon.
+async def create_stealth_page():
+    global browser
+    page = await browser.new_page()
+    await stealth_async(page) # Bu satır, sayfayı "insan benzeri" hale getiriyor.
+    return page
 
 # --- YENİ: Romen Rakamı ve Sayı Çıkarma Yardımcıları ---
 def clean_and_extract_roman(name):
-    """Converts Roman numerals at the end of a string to Arabic numerals."""
     name = name.upper()
-    roman_map = {'I': 1, 'V': 5, 'X': 10}
-    replacements = {'IV': '4', 'IX': '9', 'V': '5', 'I': '1'} # Order matters
-
-    # Check for specific roman numerals at the end
     if name.endswith(" IV"): return name.replace(" IV", " 4"), 4
     if name.endswith(" IX"): return name.replace(" IX", " 9"), 9
     if name.endswith(" V"): return name.replace(" V", " 5"), 5
     if name.endswith(" III"): return name.replace(" III", " 3"), 3
     if name.endswith(" II"): return name.replace(" II", " 2"), 2
     if name.endswith(" I"): return name.replace(" I", " 1"), 1
-
-    return name.lower(), None # Return original cleaned name if no roman numeral
+    return name.lower(), None
 
 def extract_numbers_from_title(title):
-    """Extracts all Arabic and Roman numerals from a game title."""
-    # First, find all standard digits
     numbers = set(map(int, re.findall(r'\d+', title)))
-
-    # Then, check for Roman numerals which are often used for sequels
-    # We check for them as standalone words to avoid matching 'I' in 'is'
-    # Using uppercase for consistency
     title_upper = f" {title.upper()} "
     if " II " in title_upper or title_upper.endswith(" II"): numbers.add(2)
     if " III " in title_upper or title_upper.endswith(" III"): numbers.add(3)
     if " IV " in title_upper or title_upper.endswith(" IV"): numbers.add(4)
     if " V " in title_upper or title_upper.endswith(" V"): numbers.add(5)
-
     return numbers
+
+# --- Oyun Adı Temizleme Fonksiyonu (GÜNCELLENDİ) ---
+def clean_game_name(game_name):
+    name_with_arabic, _ = clean_and_extract_roman(game_name)
+    cleaned_name = re.sub(r'[^\w\s]', ' ', name_with_arabic, flags=re.UNICODE)
+    cleaned_name = re.sub(r'\s+', ' ', cleaned_name)
+    return cleaned_name.strip().lower()
 
 # --- Döviz Kuru Alma Fonksiyonu ---
 def get_usd_to_try_rate():
@@ -220,7 +207,7 @@ async def get_playstation_price(game_name):
         return None
     page = None
     try:
-        page = await browser.new_page()
+        page = create_stealth_page()
         page.set_default_timeout(90000)
         search_url = f"https://store.playstation.com/tr-tr/search/{requests.utils.quote(game_name)}"
         logging.info(f"PlayStation için gidiliyor: {search_url}")
@@ -332,7 +319,7 @@ async def get_xbox_price(game_name_clean):
         return None
     page = None
     try:
-        page = await browser.new_page()
+        page = await create_stealth_page()
         page.set_default_timeout(90000)
         search_url = f"https://www.xbox.com/tr-TR/Search/Results?q={requests.utils.quote(game_name_clean)}"
         logging.info(f"Xbox için gidiliyor: {search_url}")
@@ -435,7 +422,7 @@ async def get_allkeyshop_price(game_name):
         url_pattern_2 = f"https://www.allkeyshop.com/blog/en-us/compare-and-buy-cd-key-for-digital-download-{formatted_game_name}/"
         urls_to_try = [url_pattern_1, url_pattern_2]
 
-        page = await browser.new_page()
+        page = await create_stealth_page()
 
         # --- YENİ: URL listesini denemek için bir döngü oluşturuyoruz ---
         for i, url in enumerate(urls_to_try):
