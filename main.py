@@ -32,6 +32,7 @@ logging.basicConfig(
 playwright = None
 browser = None
 currency_cache = { "rate": None, "last_fetched": 0 }
+ITAD_API_KEY = os.environ.get('ITAD_API_KEY')
 
 # --- Web Sunucusu ve Keep Alive ---
 app = Flask('')
@@ -195,13 +196,6 @@ def get_steam_price(game_name):
     except Exception as e:
         logging.error(f"STEAM HATA: {e}", exc_info=True)
         return None
-
-
-# --- Epic Games Link Bulma Fonksiyonu ---
-def get_epic_games_link(game_name):
-    query = requests.utils.quote(game_name)
-    return f"https://store.epicgames.com/tr/browse?q={query}&sortBy=relevancy&sortDir=DESC"
-
 
 # --- YENİ: Hata durumunda ekran görüntüsü alan yardımcı fonksiyon ---
 async def take_screenshot_on_error(page, platform_name, game_name):
@@ -419,63 +413,112 @@ async def get_xbox_price(game_name_clean):
         if page and not page.is_closed(): await page.close()
         return None
 
-# --- Allkeyshop Fiyat ve Link Alma Fonksiyonu ---
-async def get_allkeyshop_price(game_name):
-    global browser
-    if not browser or not browser.is_connected():
-        logging.warning("Allkeyshop fiyatı alınamıyor: Tarayıcı bağlı değil.")
+# --- GÜNCELLENMİŞ: IsThereAnyDeal (ITAD) API Fonksiyonları ---
+
+# BU FONKSİYONU EKLEYİN
+async def get_itad_game_id(game_name):
+    if not ITAD_API_KEY:
+        logging.error("ITAD API anahtarı bulunamadı.")
+        return None
+    try:
+        search_url = f"https://api.isthereanydeal.com/games/search/v1?key={ITAD_API_KEY}&title={requests.utils.quote(game_name)}"
+        response = await asyncio.to_thread(requests.get, search_url)
+        if response.status_code == 200:
+            results = response.json()
+            if results:
+                # Genellikle ilk sonuç en doğrusudur.
+                return results[0]['id']
+        logging.warning(f"ITAD'da '{game_name}' için oyun ID'si bulunamadı. Status Code: {response.status_code}")
+        return None
+    except Exception as e:
+        logging.error(f"ITAD OYUN ID ALMA HATA: {e}", exc_info=True)
         return None
 
-    page = None
+# YENİ: Ana mağazalar dışındaki tüm CD-Key satıcılarının ID'lerini dinamik olarak alır.
+async def get_itad_shop_ids():
+    if not ITAD_API_KEY:
+        return ""
     try:
-        # Adım 2: Gelen temiz oyun adının boşluklarını tire ile değiştir.
-        # Örnek: "red dead redemption" -> "red-dead-redemption"
-        formatted_game_name_url = game_name.replace(' ', '-')
-        logging.info(f"Allkeyshop URL'leri için formatlanmış isim: {formatted_game_name_url}")
+        shops_url = f"https://api.isthereanydeal.com/service/shops/v1?key={ITAD_API_KEY}"
+        response = await asyncio.to_thread(requests.get, shops_url)
+        if response.status_code != 200:
+            return ""
+        
+        all_shops = response.json()
+        # Ana platformları ve büyük mağazaları hariç tutalım
+        excluded_shops = ["Steam", "Epic Games Store", "Xbox Store", "PlayStation Store", "GOG", "Humble Store", "Ubisoft Store", "EA App"]
+        
+        # Hariç tutulanlar dışındaki tüm mağazaların ID'lerini topla
+        cdkey_shop_ids = [str(shop['id']) for shop in all_shops if shop['title'] not in excluded_shops]
+        
+        return ",".join(cdkey_shop_ids)
+    except Exception as e:
+        logging.error(f"ITAD Mağaza ID'leri alınırken hata: {e}")
+        return "" # Hata durumunda boş string dön, böylece program çökmez
 
-        # Bu formatlanmış isimle iki potansiyel URL'yi oluştur.
-        url_pattern_1 = f"https://www.allkeyshop.com/blog/en-us/buy-{formatted_game_name_url}-cd-key-compare-prices/"
-        url_pattern_2 = f"https://www.allkeyshop.com/blog/en-us/compare-and-buy-cd-key-for-digital-download-{formatted_game_name_url}/"
-        urls_to_try = [url_pattern_1, url_pattern_2]
+# GÜNCELLENDİ: Artık mağaza listesini dinamik olarak alıyor.
+async def get_itad_prices(game_id, cdkey_shop_ids):
+    if not ITAD_API_KEY or not game_id:
+        return None
 
-        page = await browser.new_page()
+    # Dinamik olarak alınan CD-Key mağazalarına Epic Games'i de ekleyelim
+    all_shop_ids_to_check = "16," + cdkey_shop_ids
 
-        for i, url in enumerate(urls_to_try):
-            logging.info(f"Allkeyshop için gidiliyor (Deneme {i+1}): {url}")
-            try:
-                await page.goto(url, timeout=1000, wait_until='domcontentloaded')
-                html_content = await page.content()
-                pattern = re.search(r"var gamePageTrans = ({.*?});", html_content, re.DOTALL)
-                if not pattern:
-                    logging.warning(f"URL denemesi {i+1} başarısız: 'gamePageTrans' bloğu bulunamadı.")
-                    continue
-                json_data_str = pattern.group(1)
-                data = json.loads(json_data_str)
-                prices_list = data.get("prices")
-                if not prices_list or not isinstance(prices_list, list):
-                    logging.warning(f"URL denemesi {i+1} başarısız: JSON içinde 'prices' listesi yok.")
-                    continue
-                key_offers = [offer for offer in prices_list if offer.get('account') is False and 'priceCard' in offer]
-                if not key_offers:
-                    logging.warning(f"URL denemesi {i+1} başarılı, ancak anahtar (key) teklifi bulunamadı.")
-                    continue
-                lowest_price = min(float(offer['priceCard']) for offer in key_offers)
-                logging.info(f"Allkeyshop için en düşük fiyat bulundu: {lowest_price} USD (URL: {url})")
-                return {"price": (lowest_price, "USD"), "link": url}
-            except Exception as e:
-                logging.warning(f"URL denemesi {i+1} sırasında hata: {e}")
+    try:
+        prices_url = f"https://api.isthereanydeal.com/games/prices/v3?key={ITAD_API_KEY}&country=TR&shops={all_shop_ids_to_check}"
+        payload = [game_id]
+        response = await asyncio.to_thread(requests.post, prices_url, json=payload)
+
+        # ... (Bu fonksiyonun geri kalanı bir önceki cevaptaki ile aynı kalabilir, değişiklik gerekmiyor)
+        if response.status_code != 200:
+            logging.warning(f"ITAD fiyat bilgisi alınamadı. Status: {response.status_code}, Game ID: {game_id}")
+            return None
+
+        data = response.json()
+        if not data or not data[0].get('deals'):
+            logging.info(f"ITAD'da bu mağazalar için aktif bir indirim bulunamadı. Game ID: {game_id}")
+            return None
+
+        deals = data[0]['deals']
+        epic_result = None
+        best_cdkey_result = None
+        lowest_cdkey_price = float('inf')
+
+        for deal in deals:
+            shop_id = deal.get('shop', {}).get('id')
+            price_info = deal.get('price')
+            link = deal.get('url')
+            shop_name = deal.get('shop', {}).get('name')
+
+            if not price_info or not link:
                 continue
+            
+            price_amount = price_info.get('amount')
+            price_currency = price_info.get('currency')
 
-        # ÖNEMLİ: Veri çekilemezse, oluşturulan iki linki özel bir formatta geri gönder.
-        logging.warning(f"Allkeyshop'ta '{game_name}' için veri çekilemedi. İki olası link de fallback olarak kullanılıyor.")
-        return {"price": "Linkler", "links": [url_pattern_1, url_pattern_2]}
+            if shop_id == 16: # Epic Games Store ID'si
+                epic_result = {
+                    "price": f"{price_amount:,.2f} {price_currency}".replace(",", "X").replace(".", ",").replace("X", "."),
+                    "link": link,
+                    "shop": shop_name
+                }
+            else:
+                if price_amount < lowest_cdkey_price:
+                    lowest_cdkey_price = price_amount
+                    best_cdkey_result = {
+                        "price": f"{price_amount:,.2f} {price_currency}".replace(",", "X").replace(".", ",").replace("X", "."),
+                        "link": link,
+                        "shop": shop_name
+                    }
+        
+        return {"epic": epic_result, "cdkey": best_cdkey_result}
 
     except Exception as e:
-        logging.error(f"ALLKEYSHOP (Playwright) GENEL HATA: {e}", exc_info=False)
-        if page: await take_screenshot_on_error(page, "allkeyshop", game_name)
+        logging.error(f"ITAD FİYAT ALMA HATA: {e}", exc_info=True)
         return None
-    finally:
-        if page and not page.is_closed(): await page.close()
+
+# ÖNEMLİ: Eski get_itad_game_id fonksiyonu aynı kalacak, onda bir değişiklik yapmanıza gerek yok.
+# Sadece bu get_itad_prices fonksiyonunu projenizdekiyle değiştirin.
 
 # --- Discord Bot Ana Kodları ---
 intents = discord.Intents.default()
@@ -505,74 +548,87 @@ async def on_message(message):
         msg = await message.channel.send(f"**{oyun_adi_orjinal}** için mağazalar kontrol ediliyor...")
         logging.info(f"Fiyat sorgusu başlatıldı: '{oyun_adi_orjinal}' (Temizlenmiş: '{oyun_adi_temiz}')")
 
-        tasks_part1 = {
-            "steam": asyncio.to_thread(get_steam_price, oyun_adi_temiz),
-            "epic": asyncio.to_thread(get_epic_games_link, oyun_adi_temiz),
-            "ps": get_playstation_price(oyun_adi_temiz),
-            "xbox": get_xbox_price(oyun_adi_temiz),
-        }
-        results_part1 = await asyncio.gather(*tasks_part1.values(), return_exceptions=True)
-        sonuclar = dict(zip(tasks_part1.keys(), results_part1))
-        
-        steam_sonucu = sonuclar.get("steam")
+        # --- YENİ MANTIK BAŞLANGICI ---
+
+        # Adım 1: Steam'den temel oyun bilgilerini ve adını alalım.
+        # Bu, ITAD aramasının daha doğru sonuç vermesine yardımcı olabilir.
+        steam_sonucu = await asyncio.to_thread(get_steam_price, oyun_adi_temiz)
+        sonuclar = {"steam": steam_sonucu} # Sonuçları saklamak için yeni bir sözlük
+
         display_game_name = oyun_adi_orjinal
-        
-        # Adım 1: Allkeyshop için kullanılacak adı belirle.
-        # Varsayılan olarak kullanıcının girdiği ad.
-        search_name_for_allkeyshop = oyun_adi_temiz
+        search_name_for_itad = oyun_adi_temiz
         if isinstance(steam_sonucu, dict) and steam_sonucu.get("name"):
             display_game_name = steam_sonucu['name']
-            # Steam'den isim geldiyse, onu temizle ve Allkeyshop araması için kullan.
-            search_name_for_allkeyshop = clean_game_name(steam_sonucu['name'])
-            logging.info(f"Allkeyshop araması için Steam'den gelen isim kullanılacak: '{search_name_for_allkeyshop}'")
+            search_name_for_itad = clean_game_name(steam_sonucu['name'])
+            logging.info(f"ITAD araması için Steam'den gelen isim kullanılacak: '{search_name_for_itad}'")
 
-        allkeyshop_sonucu = await get_allkeyshop_price(search_name_for_allkeyshop)
-        sonuclar["allkeyshop"] = allkeyshop_sonucu
+        # Adım 2: ITAD oyun ID'sini alalım.
+        itad_game_id_task = get_itad_game_id(search_name_for_itad)
+        cdkey_shop_ids_task = get_itad_shop_ids()
+        
+        itad_game_id, cdkey_shop_ids = await asyncio.gather(itad_game_id_task, cdkey_shop_ids_task)
+        
+        
+        # Adım 3: Diğer platformları ve ITAD'ı aynı anda sorgulayalım.
+        tasks = {
+            "ps": get_playstation_price(oyun_adi_temiz),
+            "xbox": get_xbox_price(oyun_adi_temiz),
+            "itad": get_itad_prices(itad_game_id, cdkey_shop_ids)
+        }
+        
+        results_from_gather = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        sonuclar.update(dict(zip(tasks.keys(), results_from_gather))) # Gelen sonuçları ana sözlüğe ekle
 
-        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.51", color=discord.Color.from_rgb(16, 124, 16))
+        # ITAD'dan gelen sonuçları ayrıştıralım
+        itad_results = sonuclar.pop("itad", None) # itad anahtarını al ve sözlükten çıkar
+        if isinstance(itad_results, dict):
+            sonuclar["epic"] = itad_results.get("epic")
+            sonuclar["cdkey"] = itad_results.get("cdkey")
+        else:
+            sonuclar["epic"] = sonuclar["cdkey"] = itad_results
+
+        # --- YENİ MANTIK SONU ---
+
+        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.7", color=discord.Color.from_rgb(16, 124, 16))
         embed.set_footer(text="Fiyatlar anlık olarak mağazalardan çekilmektedir.")
 
-        store_order = ["steam", "xbox", "ps", "allkeyshop", "epic"]
+        store_order = ["steam", "xbox", "ps", "epic", "cdkey"]
 
         for store in store_order:
             result = sonuclar.get(store)
-            store_name = {"steam": "Steam", "allkeyshop": "Allkeyshop (CD-Key)", "ps": "PlayStation Store", "xbox": "Xbox Store", "epic": "Epic Games"}[store]
+            store_name = {
+                "steam": "Steam", 
+                "cdkey": "En Ucuz CD-Key", 
+                "ps": "PlayStation", 
+                "xbox": "Xbox", 
+                "epic": "Epic Games"
+            }[store]
 
             if isinstance(result, Exception):
                 embed.add_field(name=store_name, value="`Hata oluştu.`", inline=True)
             elif result is None:
-                 embed.add_field(name=store_name, value="`Bulunamadı.`", inline=True)
-            
-            # ÖNEMLİ: get_allkeyshop_price'dan gelen özel cevabı yakalayan blok.
-            # Sorununuzun çözümü bu bloğun doğru çalışmasıdır.
-            elif store == "allkeyshop" and result.get("price") == "Linkler":
-                links = result.get("links", [])
-                if len(links) >= 2:
-                    main_link = f"[Mağazada Bul]({links[0]})"
-                    alt_link = f"[Alt.]({links[1]})"
-                    display_value = f"{main_link} / {alt_link}"
-                elif len(links) == 1:
-                    display_value = f"[Mağazada Bul]({links[0]})"
-                else:
-                    display_value = "`Link bulunamadı.`"
-                embed.add_field(name=store_name, value=display_value, inline=True)
-
-            elif store == "epic":
-                embed.add_field(name=store_name, value=f"[Mağazada Ara]({result})", inline=True)
+                embed.add_field(name=store_name, value="`Bulunamadı.`", inline=True)
             else:
                 price_info = result.get("price", "N/A")
                 link = result.get("link", "#")
+                
+                if store == "cdkey" and result.get("shop"):
+                    store_name = f"CD-Key ({result.get('shop')})"
+
                 display_text = ""
-                if isinstance(price_info, tuple):
+                # Sadece Steam için USD->TL dönüşümü yap
+                if store == "steam" and isinstance(price_info, tuple):
                     price, currency = price_info
                     try_rate = get_usd_to_try_rate()
                     if try_rate and currency == "USD":
                         tl_price = price * try_rate
-                        display_text = f"${price:,.2f} {currency}\n(≈ {tl_price:,.2f} TL)"
-                    else: 
-                        display_text = f"${price:,.2f} {currency}"
+                        display_text = f"${price:,.2f} {currency}\n(≈ {tl_price:,.2f} TL)".replace(",", "X").replace(".", ",").replace("X", ".")
+                    else: # Kur alınamazsa veya para birimi USD değilse, olduğu gibi yazdır
+                        display_text = f"{price} {currency}"
                 else:
+                    # Diğer tüm mağazalar için gelen hazır metni kullan
                     display_text = str(price_info)
+                
                 embed.add_field(name=store_name, value=f"[{display_text}]({link})", inline=True)
 
         await msg.edit(content=None, embed=embed)
