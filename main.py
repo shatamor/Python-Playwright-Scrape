@@ -359,10 +359,11 @@ async def take_html_on_error(response, platform_name, game_name):
         logging.error(f"Hata ayıklama HTML'i kaydedilirken sorun oluştu: {e}")
 
 # --- GÜNCELLENMİŞ: Xbox Fiyat ve Platform Fonksiyonu ---
+# --- GÜNCELLENMİŞ: Xbox Fiyat Fonksiyonu (Daha Akıllı Puanlama ve Fiyat Çekme) ---
 async def get_xbox_price_and_link_from_xbdeals(game_name):
     game_name_clean = clean_game_name(game_name)
     url = f"https://xbdeals.net/tr-store/search?search_query={requests.utils.quote(game_name_clean)}"
-    logging.info(f"[get_xbox_info] - Arama URL: {url}")
+    logging.info(f"[get_xbox_price_and_link_from_xbdeals] - Arama URL: {url}")
 
     response = None
     try:
@@ -370,29 +371,31 @@ async def get_xbox_price_and_link_from_xbdeals(game_name):
             response = await client.get(url)
             response.raise_for_status()
             
-        logging.info(f"[get_xbox_info] - HTTP Durumu: {response.status_code}")
+        logging.info(f"[get_xbox_price_and_link_from_xbdeals] - HTTP Durumu: {response.status_code}")
         
         soup = BeautifulSoup(response.text, "html.parser")
         game_cards = soup.select(".game-collection-item-details")
-        logging.info(f"[get_xbox_info] - Bulunan oyun kartı sayısı: {len(game_cards)}")
+        logging.info(f"[get_xbox_price_and_link_from_xbdeals] - Bulunan oyun kartı sayısı: {len(game_cards)}")
 
         best_match = None
         highest_score = -1
         user_query_numbers = extract_numbers_from_title(game_name_clean)
 
         if not game_cards:
-            logging.warning(f"[get_xbox_info] - Hiç oyun kartı bulunamadı.")
-            return {"price": "Bulunamadı.", "link": url}
+            logging.warning(f"[get_xbox_price_and_link_from_xbdeals] - Hiç oyun kartı bulunamadı. HTML içeriği inceleniyor...")
+            return {"game": game_name, "price": "Bulunamadı.", "link": "#"}
 
         for card in game_cards:
             title_tag = card.select_one(".game-collection-item-details-title")
             if not title_tag:
+                logging.warning("[get_xbox_price_and_link_from_xbdeals] - Bir oyun kartında başlık etiketi bulunamadı, atlanıyor.")
                 continue
 
             card_game_name_raw = title_tag.text
             card_game_name_clean = clean_game_name(card_game_name_raw)
             current_score = 0
             
+            # --- GÜNCEL PUANLAMA MANTIĞI ---
             if game_name_clean in card_game_name_clean:
                 current_score += 90
             elif card_game_name_clean in game_name_clean:
@@ -408,43 +411,159 @@ async def get_xbox_price_and_link_from_xbdeals(game_name):
                 if any(n > 1 for n in card_numbers):
                     current_score -= 100
 
-            if "deluxe" in card_game_name_clean or "upgrade" in card_game_name_clean:
+            # Gelişmiş varyasyon tespiti: Bu kelimeler varsa puanı düşür.
+            if any(term in card_game_name_clean for term in ["deluxe", "upgrade", "gold", "edition", "ultimate", "bundle", "complete"]):
                 current_score -= 50
 
             if current_score > highest_score:
                 highest_score = current_score
                 best_match = card
 
-        if not best_match or highest_score < 50:
-            logging.info(f"[get_xbox_info] - '{game_name}' için yeterli doğrulukta bir eşleşme bulunamadı.")
-            return {"price": "Bulunamadı.", "link": url}
+            logging.info(f"[get_xbox_price_and_link_from_xbdeals] - Oyun: '{card_game_name_raw}' (Temiz: '{card_game_name_clean}') | Skor: {current_score}")
 
-        # Fiyatı çekme
+        if not best_match or highest_score < 50:
+            logging.info(f"[get_xbox_price_and_link_from_xbdeals] - '{game_name}' için yeterli doğrulukta bir eşleşme bulunamadı.")
+            return {"game": game_name, "price": "Bulunamadı.", "link": url}
+
+        # --- GÜNCELLEME: Fiyatı çekme mantığı ---
         price_text = "Bilinmiyor"
-        price_tag = best_match.select_one(".game-buy-button-price") or best_match.select_one(".game-collection-item-price")
+        
+        # 1. Strikethrough (indirimli) fiyatı dene
+        price_tag_strikethrough = best_match.select_one(".game-buy-button-price.strikethrough")
+        # 2. Standart fiyatı dene
+        price_tag_standard = best_match.select_one(".game-buy-button-price") or best_match.select_one(".game-collection-item-price")
+        # 3. Ücretsiz etiketi dene
         free_tag = best_match.select_one(".game-buy-button-price-bonus")
 
-        if price_tag:
-            price_text = price_tag.text.strip()
-            logging.info(f"[get_xbox_info] - Fiyat bulundu: {price_text}")
+        # Önce indirimli fiyatı (strikethrough) kontrol et.
+        # Eğer varsa, onun üstündeki indirimli fiyatı çek.
+        if price_tag_strikethrough:
+            sale_price_tag = price_tag_strikethrough.find_previous_sibling(class_="game-buy-button-price")
+            if sale_price_tag:
+                price_text = sale_price_tag.text.strip()
+            else:
+                price_text = price_tag_strikethrough.text.strip()
+            logging.info(f"[get_xbox_price_from_xbdeals] - İndirimli fiyat bulundu: {price_text}")
+        elif price_tag_standard:
+            price_text = price_tag_standard.text.strip()
+            logging.info(f"[get_xbox_price_from_xbdeals] - Standart fiyat bulundu: {price_text}")
         elif free_tag and "FREE" in free_tag.text.upper():
             price_text = "FREE"
-            logging.info(f"[get_xbox_info] - FREE etiketi bulundu.")
+            logging.info(f"[get_xbox_price_from_xbdeals] - FREE etiketi bulundu.")
         else:
-            logging.warning(f"[get_xbox_info] - Fiyat etiketi bulunamadı.")
+            logging.warning(f"[get_xbox_price_from_xbdeals] - Fiyat etiketi bulunamadı.")
         
         # Link her zaman arama sayfasının linki olacak.
         store_link = url
         
-        return {"price": price_text, "link": store_link}
+        return {"game": game_name, "price": price_text, "link": store_link}
 
     except httpx.HTTPStatusError as e:
-        logging.error(f"[get_xbox_info] - HTTP Hatası: {e.response.status_code}")
-        return {"price": "Hata oluştu.", "link": url}
+        logging.error(f"[get_xbox_price_and_link_from_xbdeals] - HTTP Hatası: {e.response.status_code}")
+        return {"game": game_name, "price": "Hata oluştu.", "link": url}
     except Exception as e:
-        logging.error(f"[get_xbox_info] - Beklenmedik Hata: {e}", exc_info=True)
-        return {"price": "Hata oluştu.", "link": url}
+        logging.error(f"[get_xbox_price_and_link_from_xbdeals] - Beklenmedik Hata: {e}", exc_info=True)
+        return {"game": game_name, "price": "Hata oluştu.", "link": url}
 
+# --- YENİ: Xbox Link ve Platform Bilgisi (Debug Logları Eklendi) ---
+async def get_xbox_link_and_platform(game_name):
+    game_name_clean = clean_game_name(game_name)
+    search_url = f"https://xbdeals.net/tr-store/search?search_query={requests.utils.quote(game_name_clean)}"
+    logging.info(f"[get_xbox_link_and_platform] - Arama URL: {search_url}")
+    
+    try:
+        # Adım 1: Arama sayfasından en iyi eşleşmeyi ve linkini bul
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            search_response = await client.get(search_url)
+            search_response.raise_for_status()
+        
+        soup = BeautifulSoup(search_response.text, "html.parser")
+        game_cards = soup.select(".game-collection-item-details")
+        logging.info(f"[get_xbox_link_and_platform] - Arama sayfasında bulunan oyun kartı sayısı: {len(game_cards)}")
+        
+        best_match = None
+        highest_score = -1
+        user_query_numbers = extract_numbers_from_title(game_name_clean)
+
+        if not game_cards:
+            logging.warning("[get_xbox_link_and_platform] - Hiç oyun kartı bulunamadı.")
+            return {"link": search_url, "platform": "Bilinmiyor"}
+
+        for card in game_cards:
+            title_tag = card.select_one(".game-collection-item-details-title")
+            if not title_tag: continue
+            card_game_name_raw = title_tag.text
+            card_game_name_clean = clean_game_name(card_game_name_raw)
+            current_score = 0
+            
+            # Puanlama mantığı
+            if game_name_clean in card_game_name_clean:
+                current_score += 90
+            elif card_game_name_clean in game_name_clean:
+                current_score += 85
+            else:
+                continue
+
+            card_numbers = extract_numbers_from_title(card_game_name_clean)
+            if user_query_numbers:
+                if not user_query_numbers.intersection(card_numbers): current_score -= 100
+            else:
+                if any(n > 1 for n in card_numbers): current_score -= 100
+
+            if any(term in card_game_name_clean for term in ["deluxe", "upgrade", "gold", "edition", "ultimate", "bundle", "complete", "supporter's"]):
+                current_score -= 50
+
+            logging.info(f"[get_xbox_link_and_platform] - Kart İşleniyor: '{card_game_name_clean}' | Skor: {current_score}")
+            
+            if current_score > highest_score:
+                highest_score = current_score
+                best_match = card
+
+        if not best_match or highest_score < 50:
+            logging.warning(f"[get_xbox_link_and_platform] - '{game_name}' için yeterli doğrulukta bir eşleşme bulunamadı. En iyi skor: {highest_score}")
+            return {"link": search_url, "platform": "Bilinmiyor"}
+        
+        game_link_tag = best_match.select_one(".game-collection-item-link")
+        if not game_link_tag:
+            logging.warning("[get_xbox_link_and_platform] - Arama sonucunda oyun için link bulunamadı.")
+            return {"link": search_url, "platform": "Bilinmiyor"}
+        
+        game_page_url = "https://xbdeals.net" + game_link_tag['href']
+        logging.info(f"[get_xbox_link_and_platform] - En iyi eşleşme bulundu. Oyunun XBDeals linki: {game_page_url}")
+        
+        # Adım 2: Oyunun kendi sayfasından Microsoft linki ve platformu çek
+        game_page_response = await client.get(game_page_url)
+        game_page_response.raise_for_status()
+        game_page_soup = BeautifulSoup(game_page_response.text, "html.parser")
+        logging.info(f"[get_xbox_link_and_platform] - Oyunun kendi sayfası başarıyla çekildi.")
+        
+        microsoft_link_tag = game_page_soup.select_one(".game-buy-button-href")
+        microsoft_link = microsoft_link_tag.get("href") if microsoft_link_tag else search_url
+        logging.info(f"[get_xbox_link_and_platform] - Microsoft Store linki çekildi: {microsoft_link}")
+
+        platform_info = "Bilinmiyor"
+        platforms = game_page_soup.select(".game-release-item-platforms .game-badge-text")
+        if platforms:
+            platform_list = [p.text.strip() for p in platforms]
+            logging.info(f"[get_xbox_link_and_platform] - Bulunan platform etiketleri: {platform_list}")
+            if "Xbox Series X|S" in platform_list or "Xbox One" in platform_list:
+                platform_info = "Konsol"
+            if "PC" in platform_list:
+                if platform_info == "Konsol":
+                    platform_info = "PC & Konsol"
+                else:
+                    platform_info = "PC"
+        logging.info(f"[get_xbox_link_and_platform] - Nihai platform bilgisi: {platform_info}")
+        
+        return {"link": microsoft_link, "platform": platform_info}
+
+    except httpx.HTTPStatusError as e:
+        logging.error(f"[get_xbox_link_and_platform] - HTTP Hatası: {e.response.status_code}. Link: {search_url}")
+        return {"link": search_url, "platform": "Bilinmiyor"}
+    except Exception as e:
+        logging.error(f"[get_xbox_link_and_platform] - Beklenmedik Hata: {e}", exc_info=True)
+        return {"link": search_url, "platform": "Bilinmiyor"}
+        
 # --- GÜNCELLENMİŞ: IsThereAnyDeal (ITAD) API Fonksiyonları ---
 
 # BU FONKSİYONU EKLEYİN
@@ -632,6 +751,7 @@ async def on_ready():
     except Exception as e:
         logging.error(f"❌ HATA: Playwright tarayıcısı başlatılamadı: {e}", exc_info=True)
 
+# --- GÜNCELLENMİŞ: on_message Fonksiyonu ---
 @client.event
 async def on_message(message):
     if message.author == client.user: 
@@ -647,26 +767,22 @@ async def on_message(message):
         msg = await message.channel.send(f"**{oyun_adi_orjinal}** için mağazalar kontrol ediliyor...")
         logging.info(f"Fiyat sorgusu başlatıldı: '{oyun_adi_orjinal}' (Temizlenmiş: '{oyun_adi_temiz}')")
 
-        # Steam fiyat
         steam_sonucu = await asyncio.to_thread(get_steam_price, oyun_adi_temiz)
 
-        # Display isim ve ITAD arama ismi
         display_game_name = oyun_adi_orjinal
         search_name_for_itad = oyun_adi_temiz
         if isinstance(steam_sonucu, dict) and steam_sonucu.get("name"):
             display_game_name = steam_sonucu['name']
             search_name_for_itad = clean_game_name(steam_sonucu['name'])
 
-        # ITAD görevleri
         itad_game_id_task = get_itad_game_id(search_name_for_itad)
         cdkey_shop_ids_task = get_itad_shop_ids()
         itad_game_id, cdkey_shop_ids = await asyncio.gather(itad_game_id_task, cdkey_shop_ids_task)
 
-        # Ana mağazalar
-        # DEĞİŞİKLİK: Sadece tek bir Xbox fonksiyonu çağırıyoruz.
         tasks = {
             "ps": get_playstation_price(oyun_adi_temiz),
-            "xbox": get_xbox_price_and_link_from_xbdeals(oyun_adi_temiz),
+            "xbox_price": get_xbox_price_and_link_from_xbdeals(oyun_adi_temiz),
+            "xbox_info": get_xbox_link_and_platform(oyun_adi_temiz),
             "itad_cdkey_prices": get_itad_prices(itad_game_id, cdkey_shop_ids),
             "historical_lows": get_historical_lows(itad_game_id),
             "itad_subscriptions": get_itad_subscriptions(itad_game_id),
@@ -676,7 +792,6 @@ async def on_message(message):
         sonuclar = dict(zip(tasks.keys(), results_from_gather))
         sonuclar["steam"] = steam_sonucu
 
-        # CD-Key sonuçlarını ayır
         itad_cdkey_results = sonuclar.pop("itad_cdkey_prices", None)
         if isinstance(itad_cdkey_results, dict):
             sonuclar["epic"] = itad_cdkey_results.get("epic")
@@ -686,63 +801,79 @@ async def on_message(message):
         historical_lows = sonuclar.get("historical_lows", {})
 
         # Embed oluştur
-        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.86", color=discord.Color.from_rgb(16, 124, 16))
-        embed.set_footer(text="Fiyatlar anlık olarak mağazalardan ve IsThereAnyDeal API'sinden çekilmektedir.")
-
-        store_order = ["steam", "xbox", "ps", "epic", "cdkey"]
-        store_name_map = {"steam": "Steam", "cdkey": "En Ucuz CD-Key", "ps": "PlayStation", "xbox": "Xbox", "epic": "Epic Games"}
-
-        for store in store_order:
-            result = sonuclar.get(store)
-            store_name = store_name_map[store]
-
-            if isinstance(result, Exception):
-                embed.add_field(name=store_name, value=f"`Hata oluştu.`", inline=True)
-                continue
-            if result is None:
-                embed.add_field(name=store_name, value="`Bulunamadı.`", inline=True)
-                continue
-
-            price_info = result.get("price", "N/A")
-            link = result.get("link", "#")
-
-            if store == "steam" and isinstance(price_info, tuple):
-                price, currency = price_info
-                try_rate = get_usd_to_try_rate()
-                if try_rate and currency == "USD":
-                    tl_price = price * try_rate
-                    display_text = f"${price:,.2f} {currency}\n(≈ {tl_price:,.2f} TL)".replace(",", "X").replace(".", ",").replace("X", ".")
-                else:
-                    display_text = f"{price} {currency}"
+        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.92", color=discord.Color.from_rgb(16, 124, 16))
+        embed.set_footer(text="Fiyatlar anlık olarak mağazalardan ve bazı API'lerden çekilmektedir.")
+        
+        # --- Steam için alan ekle ---
+        steam_result = sonuclar.get("steam")
+        steam_price_info = steam_result.get("price", "N/A") if steam_result else "Bulunamadı."
+        steam_link = steam_result.get("link", "#") if steam_result else "#"
+        display_text_steam = "Bulunamadı."
+        if isinstance(steam_price_info, tuple):
+            price, currency = steam_price_info
+            try_rate = get_usd_to_try_rate()
+            if try_rate and currency == "USD":
+                tl_price = price * try_rate
+                display_text_steam = f"${price:,.2f} {currency}\n(≈ {tl_price:,.2f} TL)".replace(",", "X").replace(".", ",").replace("X", ".")
             else:
-                display_text = str(price_info)
+                display_text_steam = f"{price} {currency}"
+        elif steam_price_info != "N/A":
+            display_text_steam = str(steam_price_info)
+        
+        low_price_steam = historical_lows.get(61)
+        if low_price_steam:
+            display_text_steam += f"\n*En Düşük Fiyat: {low_price_steam}*"
+        embed.add_field(name="Steam", value=f"[{display_text_steam}]({steam_link})", inline=True)
+
+        # --- Xbox için alan ekle ---
+        xbox_price_result = sonuclar.get("xbox_price", {})
+        xbox_info_result = sonuclar.get("xbox_info", {})
+        
+        xbox_price = xbox_price_result.get("price", "`Bulunamadı.`")
+        xbox_link = xbox_info_result.get("link", "#")
+        xbox_platform = xbox_info_result.get("platform", "Bilinmiyor.")
+        
+        display_text_xbox = str(xbox_price)
+        if xbox_platform and xbox_platform != "Bilinmiyor":
+            display_text_xbox += f"\n*({xbox_platform})*"
             
-            # CD-Key için DRM
-            if store == 'cdkey':
-                drm = result.get("drm")
-                if drm:
-                    display_text += f" - {drm}"
+        subs_to_show = []
+        if any("Game Pass" in s for s in subscriptions): subs_to_show.append("Game Pass'e Dahil")
+        if any("EA Play" in s for s in subscriptions): subs_to_show.append("EA Play'e Dahil")
+        if subs_to_show:
+            display_text_xbox += "\n*" + " veya ".join(subs_to_show) + "*"
 
-            # Xbox için Game Pass ve EA Play bilgisi
-            if store == 'xbox' and subscriptions:
-                subs_to_show = []
-                if any("Game Pass" in s for s in subscriptions):
-                    subs_to_show.append("Game Pass'e Dahil")
-                if any("EA Play" in s for s in subscriptions):
-                    subs_to_show.append("EA Play'e Dahil")
-                if subs_to_show:
-                    display_text += "\n*" + " veya ".join(subs_to_show) + "*"
+        low_price_xbox = historical_lows.get(15)
+        if low_price_xbox:
+            display_text_xbox += f"\n*En Düşük Fiyat: {low_price_xbox}*"
+        embed.add_field(name="Xbox", value=f"[{display_text_xbox}]({xbox_link})", inline=True)
 
-            # Tarihi düşük fiyat
-            low_price = None
-            if store == 'steam' and 61 in historical_lows: low_price = historical_lows[61]
-            elif store == 'epic' and 16 in historical_lows: low_price = historical_lows[16]
-            elif store == 'xbox' and 15 in historical_lows: low_price = historical_lows[15]
-            if low_price:
-                display_text += f"\n*En Düşük Fiyat: {low_price}*"
-
-            embed.add_field(name=store_name, value=f"[{display_text}]({link})", inline=True)
-
+        # --- PlayStation için alan ekle ---
+        ps_result = sonuclar.get("ps")
+        ps_price = ps_result.get("price", "`Bulunamadı.`") if ps_result else "`Bulunamadı.`"
+        ps_link = ps_result.get("link", "#") if ps_result else "#"
+        embed.add_field(name="PlayStation", value=f"[{ps_price}]({ps_link})", inline=True)
+        
+        # --- Epic Games için alan ekle ---
+        epic_result = sonuclar.get("epic")
+        epic_price = epic_result.get("price", "`Bulunamadı.`") if epic_result else "`Bulunamadı.`"
+        epic_link = epic_result.get("link", "#") if epic_result else "#"
+        
+        low_price_epic = historical_lows.get(16)
+        if low_price_epic:
+            epic_price += f"\n*En Düşük Fiyat: {low_price_epic}*"
+        embed.add_field(name="Epic Games", value=f"[{epic_price}]({epic_link})", inline=True)
+        
+        # --- CD-Key için alan ekle ---
+        cdkey_result = sonuclar.get("cdkey")
+        cdkey_price = cdkey_result.get("price", "`Bulunamadı.`") if cdkey_result else "`Bulunamadı.`"
+        cdkey_link = cdkey_result.get("link", "#") if cdkey_result else "#"
+        cdkey_drm = cdkey_result.get("drm") if cdkey_result else None
+        
+        if cdkey_drm:
+            cdkey_price += f" - {cdkey_drm}"
+        embed.add_field(name="En Ucuz CD-Key", value=f"[{cdkey_price}]({cdkey_link})", inline=True)
+        
         await msg.edit(content=None, embed=embed)
 
 # --- Botu ve Sunucuyu Başlatma ---
