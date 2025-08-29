@@ -4,3 +4,4 @@ requests
 playwright
 beautifulsoup4
 playwright-stealth
+httpx
