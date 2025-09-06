@@ -605,17 +605,17 @@ async def on_message(message):
         steam_sonucu = await asyncio.to_thread(get_steam_price, oyun_adi_temiz)
 
         display_game_name = oyun_adi_orjinal
-        search_name_for_itad = oyun_adi_temiz
+        search_name_for_other_apis = oyun_adi_temiz
         if isinstance(steam_sonucu, dict) and steam_sonucu.get("name"):
             display_game_name = steam_sonucu['name']
-            search_name_for_itad = clean_game_name(steam_sonucu['name'])
+            search_name_for_other_apis = clean_game_name(steam_sonucu['name'])
 
-        itad_game_id_task = get_itad_game_id(search_name_for_itad)
+        itad_game_id_task = get_itad_game_id(search_name_for_other_apis)
         cdkey_shop_ids_task = get_itad_shop_ids()
         itad_game_id, cdkey_shop_ids = await asyncio.gather(itad_game_id_task, cdkey_shop_ids_task)
 
         tasks = {
-            "ps": get_playstation_price(oyun_adi_temiz),
+            "ps": get_playstation_price(search_name_for_other_apis),
             "itad_cdkey_prices": get_itad_prices(itad_game_id, cdkey_shop_ids),
             "historical_lows": get_historical_lows(itad_game_id),
             "itad_subscriptions": get_itad_subscriptions(itad_game_id),
