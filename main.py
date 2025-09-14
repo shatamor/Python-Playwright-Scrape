@@ -58,6 +58,13 @@ def clean_game_name(game_name):
 
     # 2. Adım: Kalan özel karakterleri (harf, rakam veya boşluk olmayan her şeyi) boşlukla değiştir.
     cleaned_name = re.sub(r'[^\w\s]', ' ', cleaned_name, flags=re.UNICODE)
+    cleaned_name = re.sub(r'\s*\(?goty\)?\s*', ' ', cleaned_name, flags=re.I)
+    cleaned_name = re.sub(r'\s*\(?game of the year\)?\s*', ' ', cleaned_name, flags=re.I)
+    cleaned_name = re.sub(r'\s*edition\s*', ' ', cleaned_name, flags=re.I)
+    cleaned_name = re.sub(r'\s*sürümü\s*', ' ', cleaned_name, flags=re.I)
+    cleaned_name = re.sub(r'\s*remastered\s*', ' ', cleaned_name, flags=re.I)
+    cleaned_name = re.sub(r'\s*ultimate\s*', ' ', cleaned_name, flags=re.I)
+    cleaned_name = re.sub(r'\s*deluxe\s*', ' ', cleaned_name, flags=re.I)
 
     # 3. Adım: Oluşabilecek çoklu boşlukları tek boşluğa indir.
     cleaned_name = re.sub(r'\s+', ' ', cleaned_name)
