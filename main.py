@@ -435,7 +435,10 @@ async def get_playstation_price(game_name):
                 if user_query_numbers:
                     if not user_query_numbers.intersection(result_numbers): current_score = -1
                 else:
-                    if any(n > 1 for n in result_numbers): current_score = -1
+                    # YENİ: PS4, PS5 gibi platform ibarelerini ayırt etmek için
+                    is_platform_version = any(platform_str in cleaned_item_name for platform_str in ['ps4', 'ps5'])
+                    if not is_platform_version and any(n > 1 for n in result_numbers): 
+                        current_score = -1
 
                 if current_score > highest_score:
                     highest_score = current_score; best_match_element = result
@@ -750,8 +753,22 @@ async def on_message(message):
         msg = await message.channel.send(f"**{oyun_adi_orjinal}** için mağazalar kontrol ediliyor...")
         logging.info(f"Fiyat sorgusu başlatıldı: '{oyun_adi_orjinal}' (Temizlenmiş: '{oyun_adi_temiz}')")
 
-        steam_sonucu = await asyncio.to_thread(get_steam_price, oyun_adi_temiz)
+        # Önce orijinal (temizlenmemiş) oyun adıyla Steam'i sorgula
+        steam_sonucu_orjinal = await asyncio.to_thread(get_steam_price, oyun_adi_orjinal)
 
+        # Ardından temizlenmiş adla sorgula
+        steam_sonucu_temiz = await asyncio.to_thread(get_steam_price, oyun_adi_temiz)
+
+        # En iyi Steam sonucunu belirle
+        steam_sonucu = None
+        if isinstance(steam_sonucu_orjinal, dict) and steam_sonucu_orjinal.get("name"):
+            # Orijinal isimle bir sonuç bulunduysa bunu kullan
+            steam_sonucu = steam_sonucu_orjinal
+        elif isinstance(steam_sonucu_temiz, dict) and steam_sonucu_temiz.get("name"):
+            # Orijinal isimle bulunamadıysa temizlenmiş olanı kullan
+            steam_sonucu = steam_sonucu_temiz
+
+        # Diğer API'ler için referans adı belirle
         display_game_name = oyun_adi_orjinal
         search_name_for_other_apis = oyun_adi_temiz
         if isinstance(steam_sonucu, dict) and steam_sonucu.get("name"):
@@ -762,12 +779,32 @@ async def on_message(message):
         cdkey_shop_ids_task = get_itad_shop_ids()
         itad_game_id, cdkey_shop_ids = await asyncio.gather(itad_game_id_task, cdkey_shop_ids_task)
 
+        itad_game_id = None
+        # Adım 1: Orijinal oyun adıyla ITAD ID'sini almaya çalış
+        try:
+            itad_game_id = await get_itad_game_id(oyun_adi_orjinal)
+        except Exception as e:
+            logging.warning(f"Orijinal oyun adıyla ITAD ID'si bulunamadı: {e}")
+
+        # Adım 2: Eğer orijinal adla ID bulunamadıysa, referans adla tekrar dene
+        if not itad_game_id:
+            try:
+                itad_game_id = await get_itad_game_id(search_name_for_other_apis)
+            except Exception as e:
+                logging.error(f"Referans oyun adıyla da ITAD ID'si bulunamadı: {e}")
+                # ID bulunamazsa, diğer ITAD görevlerini başlatma
+                itad_game_id = None 
+
         tasks = {
             "ps": get_playstation_price(search_name_for_other_apis),
-            "itad_cdkey_prices": get_itad_prices(itad_game_id, cdkey_shop_ids),
-            "historical_lows": get_historical_lows(itad_game_id),
-            "itad_subscriptions": get_itad_subscriptions(itad_game_id),
         }
+
+        if itad_game_id:
+            tasks["itad_cdkey_prices"] = get_itad_prices(itad_game_id, cdkey_shop_ids)
+            tasks["historical_lows"] = get_historical_lows(itad_game_id)
+            tasks["itad_subscriptions"] = get_itad_subscriptions(itad_game_id)
+        else:
+            logging.warning("ITAD ID bulunamadığı için ilgili görevler başlatılmadı.")
 
         results_from_gather = await asyncio.gather(*tasks.values(), return_exceptions=True)
         sonuclar = dict(zip(tasks.keys(), results_from_gather))
@@ -797,7 +834,7 @@ async def on_message(message):
         historical_lows = sonuclar.get("historical_lows", {})
 
         # Embed oluştur
-        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.96", color=discord.Color.from_rgb(16, 124, 16))
+        embed = discord.Embed(title=f"🎮 {display_game_name} Fiyat Bilgisi ve Linkler V.0.97", color=discord.Color.from_rgb(16, 124, 16))
         embed.set_footer(text="Fiyatlar anlık olarak mağazalardan ve bazı API'lerden çekilmektedir.")
 
         def get_not_found_text(platform_name):
