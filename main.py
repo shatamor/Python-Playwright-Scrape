@@ -245,7 +245,7 @@ async def get_xbox_price(game_name_clean):
     page = None
     try:
         page = await browser.new_page()
-        page.set_default_timeout(5000)
+        page.set_default_timeout(8000)
         search_url = f"https://www.xbox.com/tr-TR/Search/Results?q={requests.utils.quote(game_name_clean)}"
         logging.info(f"Xbox için gidiliyor: {search_url}")
 
